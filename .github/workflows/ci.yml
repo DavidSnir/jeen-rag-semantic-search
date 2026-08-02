@@ -6,9 +6,15 @@ on:
       - main
 
 jobs:
-  bootstrap:
+  stage-1:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      POSTGRES_DB: rag_app_test
+      POSTGRES_USER: rag_app_test
+      POSTGRES_PASSWORD: ci-only-stage-1-password
+      POSTGRES_PORT: "5432"
+      POSTGRES_URL: postgresql://rag_app_test:ci-only-stage-1-password@localhost:5432/rag_app_test
 
     steps:
       - name: Check out repository
@@ -36,5 +42,32 @@ jobs:
           python index_documents.py --help
           python search.py --help
 
-      - name: Run tests
-        run: python -m pytest
+      - name: Validate Docker Compose configuration
+        run: docker compose config --quiet
+
+      - name: Start PostgreSQL and wait for health
+        run: docker compose up --detach --wait --wait-timeout 90 postgres
+
+      - name: Verify PostgreSQL container health
+        run: test "$(docker inspect --format='{{.State.Health.Status}}' jeen-rag-postgres)" = "healthy"
+
+      - name: Verify automatic first-volume schema
+        run: python -m rag_app.cli database-check
+
+      - name: Initialize schema twice
+        run: |
+          python -m rag_app.cli database-init
+          python -m rag_app.cli database-init
+
+      - name: Verify complete database readiness
+        run: python -m rag_app.cli database-check
+
+      - name: Run unit tests
+        run: python -m pytest tests/unit
+
+      - name: Run database integration tests
+        run: python -m pytest tests/integration
+
+      - name: Stop disposable PostgreSQL environment
+        if: always()
+        run: docker compose down --volumes

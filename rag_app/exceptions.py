@@ -11,3 +11,19 @@ class ConfigurationError(RagAppError):
 
 class FeatureUnavailableError(RagAppError):
     """Raised when a later-stage application feature is invoked."""
+
+
+class DatabaseError(RagAppError):
+    """Base class for expected database failures."""
+
+
+class DatabaseConnectionError(DatabaseError):
+    """Raised when a PostgreSQL connection cannot be established."""
+
+
+class DatabaseSchemaError(DatabaseError):
+    """Raised when database schema initialization or validation fails."""
+
+
+class DatabaseOperationError(DatabaseError):
+    """Raised when an established connection cannot complete an operation."""
