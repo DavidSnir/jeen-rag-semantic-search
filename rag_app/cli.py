@@ -3,20 +3,26 @@
 from collections.abc import Callable, Sequence
 from enum import Enum
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, TypeVar
 
 import typer
 
 from rag_app.config import DEFAULT_TOP_K
+from rag_app.database.repository import (
+    check_database_readiness,
+    initialize_schema,
+)
 from rag_app.exceptions import RagAppError
 from rag_app.services.indexing import index_document, reset_index
 from rag_app.services.search import search_documents
 
 app = typer.Typer(
-    help="Index documents and search indexed content semantically.",
+    help="Manage the database foundation for document indexing and search.",
     no_args_is_help=True,
     add_completion=False,
 )
+
+Result = TypeVar("Result")
 
 
 class ChunkingStrategy(str, Enum):
@@ -25,6 +31,28 @@ class ChunkingStrategy(str, Enum):
     fixed = "fixed"
     sentence = "sentence"
     paragraph = "paragraph"
+
+
+@app.command("database-init")
+def database_init() -> None:
+    """Create and validate the PostgreSQL/pgvector schema."""
+    status = _run(initialize_schema)
+    typer.echo(
+        "Database schema initialized "
+        f"(PostgreSQL {status.postgresql_version}, "
+        f"pgvector {status.pgvector_version}, {status.embedding_type})."
+    )
+
+
+@app.command("database-check")
+def database_check() -> None:
+    """Verify PostgreSQL connectivity and the complete expected schema."""
+    status = _run(check_database_readiness)
+    typer.echo(
+        "Database is ready "
+        f"(PostgreSQL {status.postgresql_version}, "
+        f"pgvector {status.pgvector_version}, {status.embedding_type})."
+    )
 
 
 def _validate_document_file(path: Path) -> Path:
@@ -98,10 +126,10 @@ def reset(
     _run(reset_index)
 
 
-def _run(operation: Callable[..., object], *args: object) -> None:
+def _run(operation: Callable[..., Result], *args: object) -> Result:
     """Present expected application failures without a stack trace."""
     try:
-        operation(*args)
+        return operation(*args)
     except RagAppError as error:
         typer.echo(f"Error: {error}", err=True)
         raise typer.Exit(code=1) from error

@@ -1,8 +1,8 @@
 # Architecture Decisions
 
 This log records the approved implementation constraints for the document-indexing
-and semantic-search application. Stage 0 documents these decisions without
-implementing the corresponding application behavior.
+and semantic-search application. Stage 0 established the initial decisions;
+later stages add resolved implementation details without removing them.
 
 ## Document Extraction
 
@@ -102,3 +102,14 @@ implementing the corresponding application behavior.
 64. Use mocked Gemini responses in automated tests.
 65. Run integration tests against PostgreSQL with pgvector.
 66. Perform one manual smoke test against the real Gemini API before submission.
+
+## Stage 1 Database Implementation
+
+67. Use `pgvector/pgvector:0.8.2-pg17-bookworm`, selecting PostgreSQL 17 and pgvector 0.8.2 explicitly.
+68. Use HNSW for the vector index with the `vector_cosine_ops` operator class and default construction parameters.
+69. Enforce chunk identity with a uniqueness constraint over `source_file`, `document_hash`, `chunking_strategy`, and `chunk_index`.
+70. Keep `rag_app/database/schema.sql` as the canonical idempotent schema instead of introducing a migration framework.
+71. Mount the canonical schema directly into Docker's first-volume initialization directory rather than maintaining a second SQL copy.
+72. Use a five-second Psycopg connection timeout so invalid targets fail promptly.
+73. Keep autocommit disabled and let callers explicitly control database transactions.
+74. Run application-level schema initialization and complete catalog verification because Docker entrypoint scripts do not rerun for existing volumes.
