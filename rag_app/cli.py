@@ -3,7 +3,6 @@
 from collections.abc import Callable, Sequence
 from enum import Enum
 from pathlib import Path
-import sys
 from typing import Annotated
 
 import typer
@@ -115,12 +114,12 @@ def main(args: Sequence[str] | None = None, prog_name: str | None = None) -> Non
 
 def run_index_wrapper() -> None:
     """Run the shared index command from the assignment-compatible script."""
-    main(["index", *sys.argv[1:]], prog_name="index_documents.py")
+    typer.run(index)
 
 
 def run_search_wrapper() -> None:
     """Run the shared search command from the assignment-compatible script."""
-    main(["search", *sys.argv[1:]], prog_name="search.py")
+    typer.run(search)
 
 
 if __name__ == "__main__":

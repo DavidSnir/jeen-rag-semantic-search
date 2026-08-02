@@ -21,7 +21,6 @@ class Settings:
     postgres_url: str
     embedding_model: str
     embedding_dimension: int
-    default_top_k: int
     log_level: str
 
 
@@ -60,7 +59,6 @@ def load_settings() -> Settings:
         ).strip()
         or DEFAULT_EMBEDDING_MODEL,
         embedding_dimension=embedding_dimension,
-        default_top_k=_positive_integer_setting("DEFAULT_TOP_K", DEFAULT_TOP_K),
         log_level=os.getenv("LOG_LEVEL", DEFAULT_LOG_LEVEL).strip()
         or DEFAULT_LOG_LEVEL,
     )
