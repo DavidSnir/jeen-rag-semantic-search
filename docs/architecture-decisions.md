@@ -113,3 +113,17 @@ later stages add resolved implementation details without removing them.
 72. Use a five-second Psycopg connection timeout so invalid targets fail promptly.
 73. Keep autocommit disabled and let callers explicitly control database transactions.
 74. Run application-level schema initialization and complete catalog verification because Docker entrypoint scripts do not rerun for existing volumes.
+
+## Stage 2 Document Extraction Implementation
+
+75. Represent extracted content with an immutable shared document model containing the source filename, canonical source type, and ordered text units so later chunking does not reopen parser objects.
+76. Use one-based physical page numbers for PDF units and preserve gaps caused by blank pages.
+77. Use `NULL` page numbers for every DOCX unit.
+78. Traverse the DOCX main body with `python-docx` ordered inner content so paragraphs and tables remain interleaved.
+79. Represent each non-empty DOCX table row as cleaned cells joined by the visible ` | ` separator while retaining empty-cell positions.
+80. Detect recurring PDF margins only within at most two non-empty lines at each page edge, require occurrence on at least two and at least half of all pages, and normalize only the matching physical page-number token for footer comparison.
+81. Keep header and footer comparison normalization separate from returned text and remove matches only from the edge region where they were detected.
+82. Make shared cleaning deterministic and idempotent while preserving meaningful Unicode, punctuation, symbols, numbers, and line separation.
+83. Detect empty or non-extractable documents only after margin removal, shared cleaning, and empty-unit removal.
+84. Do not add OCR or password handling; scanned PDFs require embedded text and password-protected PDFs are rejected.
+85. Expose extraction as an application API without adding a separate extraction CLI command or presenting indexing as complete.
