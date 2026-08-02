@@ -1,0 +1,126 @@
+"""Typer command-line interface for application use cases."""
+
+from collections.abc import Callable, Sequence
+from enum import Enum
+from pathlib import Path
+from typing import Annotated
+
+import typer
+
+from rag_app.config import DEFAULT_TOP_K
+from rag_app.exceptions import RagAppError
+from rag_app.services.indexing import index_document, reset_index
+from rag_app.services.search import search_documents
+
+app = typer.Typer(
+    help="Index documents and search indexed content semantically.",
+    no_args_is_help=True,
+    add_completion=False,
+)
+
+
+class ChunkingStrategy(str, Enum):
+    """Chunking strategies accepted by indexing and search commands."""
+
+    fixed = "fixed"
+    sentence = "sentence"
+    paragraph = "paragraph"
+
+
+def _validate_document_file(path: Path) -> Path:
+    if path.suffix.lower() not in {".pdf", ".docx"}:
+        raise typer.BadParameter("File must have a .pdf or .docx extension")
+    return path
+
+
+def _validate_query(query: str) -> str:
+    if not query.strip():
+        raise typer.BadParameter("Query must not be empty")
+    return query
+
+
+@app.command()
+def index(
+    file: Annotated[
+        Path,
+        typer.Option(
+            "--file",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            callback=_validate_document_file,
+            help="PDF or DOCX document to index.",
+        ),
+    ],
+    strategy: Annotated[
+        ChunkingStrategy,
+        typer.Option("--strategy", help="Chunking strategy to use."),
+    ],
+) -> None:
+    """Index one document with the selected chunking strategy."""
+    _run(index_document, file, strategy.value)
+
+
+@app.command()
+def search(
+    query: Annotated[
+        str,
+        typer.Option(
+            "--query",
+            callback=_validate_query,
+            help="Question or text to search for.",
+        ),
+    ],
+    strategy: Annotated[
+        ChunkingStrategy,
+        typer.Option("--strategy", help="Chunking strategy to search."),
+    ],
+    top_k: Annotated[
+        int,
+        typer.Option("--top-k", min=1, help="Maximum number of results."),
+    ] = DEFAULT_TOP_K,
+) -> None:
+    """Search indexed content using semantic similarity."""
+    _run(search_documents, query, strategy.value, top_k)
+
+
+@app.command()
+def reset(
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", help="Confirm removal of all indexed content."),
+    ] = False,
+) -> None:
+    """Remove all indexed content after explicit confirmation."""
+    if not yes:
+        raise typer.BadParameter("Pass --yes to confirm reset", param_hint="--yes")
+    _run(reset_index)
+
+
+def _run(operation: Callable[..., object], *args: object) -> None:
+    """Present expected application failures without a stack trace."""
+    try:
+        operation(*args)
+    except RagAppError as error:
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=1) from error
+
+
+def main(args: Sequence[str] | None = None, prog_name: str | None = None) -> None:
+    """Run the unified CLI, optionally with arguments supplied by a wrapper."""
+    app(args=list(args) if args is not None else None, prog_name=prog_name)
+
+
+def run_index_wrapper() -> None:
+    """Run the shared index command from the assignment-compatible script."""
+    typer.run(index)
+
+
+def run_search_wrapper() -> None:
+    """Run the shared search command from the assignment-compatible script."""
+    typer.run(search)
+
+
+if __name__ == "__main__":
+    main()
