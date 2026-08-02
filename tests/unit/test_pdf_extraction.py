@@ -116,3 +116,27 @@ def test_changing_numeric_body_values_are_not_treated_as_page_numbers() -> None:
     cleaned = _remove_repeated_margins(pages)
 
     assert [page.splitlines()[-1] for page in cleaned] == ["100", "200", "300"]
+
+
+def test_fixed_numeric_footer_is_removed_consistently() -> None:
+    pages = [
+        "First heading\nbody 1\nSection 2",
+        "Second heading\nbody 2\nSection 2",
+        "Third heading\nbody 3\nSection 2",
+    ]
+
+    cleaned = _remove_repeated_margins(pages)
+
+    assert all("Section 2" not in page for page in cleaned)
+
+
+def test_duplicate_footer_lines_on_one_page_do_not_count_as_two_pages() -> None:
+    pages = [
+        "First heading\nbody 1\nmore body\nPage 1\nPage 1",
+        "Second heading\nbody 2\nmore body\nother\nending",
+        "Third heading\nbody 3\nmore body\nanother\nfinish",
+    ]
+
+    cleaned = _remove_repeated_margins(pages)
+
+    assert cleaned[0].splitlines()[-2:] == ["Page 1", "Page 1"]

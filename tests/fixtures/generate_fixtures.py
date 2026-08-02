@@ -1,6 +1,7 @@
 """Regenerate the repository's small synthetic document fixtures."""
 
 from pathlib import Path
+from zipfile import ZipFile, ZipInfo
 
 from docx import Document
 from pypdf import PdfWriter
@@ -78,7 +79,22 @@ def _write_docx() -> None:
     second_table.cell(0, 0).text = "Left"
     second_table.cell(0, 2).text = "Right"
     document.add_paragraph("After table")
-    document.save(DOCX_ROOT / "ordered-content.docx")
+    path = DOCX_ROOT / "ordered-content.docx"
+    document.save(path)
+    _normalize_docx_archive(path)
+
+
+def _normalize_docx_archive(path: Path) -> None:
+    normalized_path = path.with_suffix(".normalized.docx")
+    with ZipFile(path, "r") as source, ZipFile(normalized_path, "w") as target:
+        for original in sorted(source.infolist(), key=lambda entry: entry.filename):
+            entry = ZipInfo(original.filename, date_time=(1980, 1, 1, 0, 0, 0))
+            entry.compress_type = original.compress_type
+            entry.create_system = original.create_system
+            entry.external_attr = original.external_attr
+            entry.internal_attr = original.internal_attr
+            target.writestr(entry, source.read(original.filename))
+    normalized_path.replace(path)
 
 
 def main() -> None:

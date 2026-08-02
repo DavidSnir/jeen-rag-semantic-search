@@ -42,6 +42,11 @@ jobs:
           python index_documents.py --help
           python search.py --help
 
+      - name: Verify deterministic synthetic fixtures
+        run: |
+          python tests/fixtures/generate_fixtures.py
+          git diff --exit-code -- tests/fixtures
+
       - name: Validate Docker Compose configuration
         run: docker compose config --quiet
 

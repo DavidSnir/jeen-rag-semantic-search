@@ -49,7 +49,8 @@ def _remove_repeated_margins(page_texts: list[str]) -> list[str]:
 
     pages: list[tuple[list[str], list[int], list[int], int]] = []
     header_counts: Counter[str] = Counter()
-    footer_counts: Counter[str] = Counter()
+    exact_footer_counts: Counter[str] = Counter()
+    numbered_footer_counts: Counter[str] = Counter()
 
     for page_number, text in enumerate(page_texts, 1):
         lines = text.splitlines()
@@ -58,10 +59,17 @@ def _remove_repeated_margins(page_texts: list[str]) -> list[str]:
         header_counts.update(
             {_comparison_key(lines[index]) for index in header_indices}
         )
-        footer_counts.update(
+        exact_footer_counts.update(
+            {_comparison_key(lines[index]) for index in footer_indices}
+        )
+        numbered_footer_counts.update(
             {
-                _footer_comparison_key(lines[index], page_number)
+                template
                 for index in footer_indices
+                if (template := _page_number_footer_template(
+                    lines[index], page_number
+                ))
+                is not None
             }
         )
 
@@ -69,8 +77,15 @@ def _remove_repeated_margins(page_texts: list[str]) -> list[str]:
     repeated_headers = {
         key for key, count in header_counts.items() if count >= minimum_occurrences
     }
-    repeated_footers = {
-        key for key, count in footer_counts.items() if count >= minimum_occurrences
+    repeated_exact_footers = {
+        key
+        for key, count in exact_footer_counts.items()
+        if count >= minimum_occurrences
+    }
+    repeated_numbered_footers = {
+        key
+        for key, count in numbered_footer_counts.items()
+        if count >= minimum_occurrences
     }
 
     cleaned_pages: list[str] = []
@@ -83,7 +98,9 @@ def _remove_repeated_margins(page_texts: list[str]) -> list[str]:
         removed_indices.update(
             index
             for index in footer_indices
-            if _footer_comparison_key(lines[index], page_number) in repeated_footers
+            if _comparison_key(lines[index]) in repeated_exact_footers
+            or _page_number_footer_template(lines[index], page_number)
+            in repeated_numbered_footers
         )
         cleaned_pages.append(
             "\n".join(
@@ -108,15 +125,9 @@ def _comparison_key(line: str) -> str:
     return _WHITESPACE.sub(" ", line).strip()
 
 
-def _footer_comparison_key(line: str, page_number: int) -> str:
+def _page_number_footer_template(line: str, page_number: int) -> str | None:
     key = _comparison_key(line)
-    replaced_page_number = False
-
-    def replace_physical_page(match: re.Match[str]) -> str:
-        nonlocal replaced_page_number
-        if not replaced_page_number and int(match.group()) == page_number:
-            replaced_page_number = True
-            return "<page-number>"
-        return match.group()
-
-    return _NUMBER.sub(replace_physical_page, key)
+    for match in _NUMBER.finditer(key):
+        if int(match.group()) == page_number:
+            return f"{key[:match.start()]}<page-number>{key[match.end():]}"
+    return None
