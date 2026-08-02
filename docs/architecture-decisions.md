@@ -1,0 +1,104 @@
+# Architecture Decisions
+
+This log records the approved implementation constraints for the document-indexing
+and semantic-search application. Stage 0 documents these decisions without
+implementing the corresponding application behavior.
+
+## Document Extraction
+
+1. PDF extraction uses `pypdf`.
+2. DOCX extraction uses `python-docx`.
+3. PDF content is extracted page by page.
+4. DOCX paragraphs and table content should be extracted in document order as closely as possible.
+5. OCR is out of scope because the selected documents contain embedded text.
+
+## Text Cleaning
+
+6. Collapse duplicate spaces and tabs.
+7. Collapse repeated blank lines.
+8. Remove recurring headers and footers.
+9. Preserve ordinary punctuation and meaningful special characters.
+10. Remove only control characters and invisible characters.
+
+## Chunking
+
+11. Implement three strategies: fixed-size, sentence-based, and paragraph-based.
+12. Fixed-size chunks use 2,000 characters.
+13. Fixed-size overlap is 500 characters.
+14. Fixed-size measurement is based on characters, not words or tokens.
+15. Sentence splitting uses `spacy.blank("en")` with the Sentencizer.
+16. Documents are expected to be in English.
+17. A paragraph longer than 2,000 characters is first split by sentence.
+18. A single sentence longer than 2,000 characters falls back to fixed-size splitting with a 500-character overlap.
+
+## PostgreSQL and pgvector
+
+19. PostgreSQL with pgvector will run through Docker Compose.
+20. Use a version-pinned PostgreSQL/pgvector image.
+21. Use a named volume for persistence.
+22. Add a PostgreSQL health check.
+23. Do not add pgAdmin or unrelated services.
+24. Create the `vector` extension idempotently.
+25. Create the chunk table idempotently.
+26. Initialization should run automatically rather than requiring manual SQL.
+27. The application should also verify that the required schema exists during startup.
+
+## Embeddings
+
+28. Use the Google Gen AI Python SDK package `google-genai`.
+29. Use the model `gemini-embedding-001`.
+30. Request `output_dimensionality=768`.
+31. Store embeddings in a `vector(768)` column.
+32. Validate that every embedding has exactly 768 dimensions before persistence.
+33. Stop indexing with a clear error if an embedding has an invalid dimension.
+34. Do not insert partial document data after an embedding failure.
+
+## Search
+
+35. Use cosine similarity.
+36. Use pgvector's cosine-distance operator `<=>`.
+37. Use `vector_cosine_ops` for the future vector index.
+38. Present similarity as `1 - cosine_distance`.
+39. Return five search results by default.
+40. Allow the user to override the result count through `top_k`.
+
+## Indexing and Metadata
+
+41. Calculate a SHA-256 hash from the document content.
+42. Treat the combination of document, content hash, and chunking strategy as the indexing identity.
+43. Skip insertion when the same content and strategy are already indexed.
+44. Replace old chunks when the file content changes.
+45. Perform deletion and replacement inside one transaction.
+46. Store `source_file`, `document_hash`, `chunk_index`, `chunking_strategy`, `page_number`, `source_type`, and `created_at` metadata.
+47. Use `NULL` for `page_number` when it is unavailable, including DOCX documents.
+48. Store `source_type` as `PDF` or `DOCX`.
+
+## Database Insertion
+
+49. Prefer `COPY FROM STDIN` for chunk insertion.
+50. Use `executemany()` as a fallback when COPY is unavailable.
+51. Use one transaction for each document and chunking-strategy combination.
+52. Commit only after all chunks have been inserted successfully.
+
+## Gemini Failures
+
+53. Use the default retry behavior supplied by the pinned Google Gen AI SDK.
+54. Do not add a custom retry or backoff mechanism during the initial implementation.
+55. If the SDK ultimately fails, fail the complete document-indexing transaction.
+
+## CLI
+
+56. Use Typer.
+57. Provide `index`, `search`, and `reset` commands.
+58. Preserve the required root-level `index_documents.py` entry point.
+59. Keep CLI handlers separate from the application logic.
+
+## Example Document and Tests
+
+60. Use the English Bitcoin Whitepaper for README demonstrations.
+61. Include a link and download instructions rather than committing the PDF by default.
+62. Require a minimum of 80% line coverage before submission.
+63. Fully test text cleaning, all three chunking strategies, embedding-dimension validation, duplicate-index prevention, and semantic-search query construction.
+64. Use mocked Gemini responses in automated tests.
+65. Run integration tests against PostgreSQL with pgvector.
+66. Perform one manual smoke test against the real Gemini API before submission.

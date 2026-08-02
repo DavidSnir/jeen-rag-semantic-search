@@ -1,0 +1,1 @@
+-- PostgreSQL and pgvector schema is intentionally deferred beyond Stage 0.
