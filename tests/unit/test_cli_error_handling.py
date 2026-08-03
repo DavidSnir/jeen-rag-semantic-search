@@ -5,6 +5,7 @@ import sys
 
 import psycopg
 import pytest
+from click import unstyle
 from typer.testing import CliRunner
 
 import rag_app.cli as cli_module
@@ -95,7 +96,7 @@ def test_reset_requires_confirmation_and_remains_unavailable() -> None:
     confirmed = RUNNER.invoke(cli_module.app, ["reset", "--yes"])
 
     assert unconfirmed.exit_code == 2
-    assert "Pass --yes to confirm reset" in unconfirmed.output
+    assert "Pass --yes to confirm reset" in unstyle(unconfirmed.output)
     assert confirmed.exit_code == 1
     assert confirmed.output == "Error: Index reset is not implemented.\n"
     assert "Traceback" not in confirmed.output
