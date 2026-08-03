@@ -289,6 +289,21 @@ def test_psycopg_query_failures_are_safely_converted_and_chained(
     assert connection.closes == 1
 
 
+def test_programming_error_is_rolled_back_but_not_converted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = _SearchCursor([], execute_error=RuntimeError("programming bug"))
+    connection, factory = _use_connection(monkeypatch, cursor)
+
+    with pytest.raises(RuntimeError, match="programming bug"):
+        search_similar_chunks(QUERY_VECTOR, ChunkingStrategy.fixed, 2)
+
+    assert connection.rollbacks == 1
+    assert connection.commits == 0
+    assert factory.exits == 1
+    assert connection.closes == 1
+
+
 @pytest.mark.parametrize(
     "malformed_row",
     [

@@ -21,12 +21,17 @@ def validate_document_path(path: str | Path | None) -> tuple[Path, SourceType]:
     candidate = Path(path)
     filename = candidate.name or "the supplied path"
 
+    if any(ord(character) < 32 or ord(character) == 127 for character in filename):
+        raise InvalidDocumentPathError(
+            "Document filename contains unsupported control characters."
+        )
+
     try:
         if not candidate.exists():
-            raise InvalidDocumentPathError(f"Document file '{filename}' does not exist")
+            raise InvalidDocumentPathError(f"Document file was not found: {filename}")
         if not candidate.is_file():
             raise InvalidDocumentPathError(
-                f"Document path '{filename}' is not a regular file"
+                f"Document path is not a regular file: {filename}"
             )
         with candidate.open("rb"):
             pass
@@ -34,17 +39,17 @@ def validate_document_path(path: str | Path | None) -> tuple[Path, SourceType]:
         raise
     except OSError as error:
         raise InvalidDocumentPathError(
-            f"Document file '{filename}' cannot be read"
+            f"Document file cannot be read: {filename}"
         ) from error
 
     extension = candidate.suffix.lower()
     if not extension:
         raise UnsupportedDocumentTypeError(
-            f"Document file '{filename}' has no supported file extension"
+            "Unsupported document type. Use a PDF or DOCX file."
         )
     if extension not in _SOURCE_TYPES:
         raise UnsupportedDocumentTypeError(
-            f"Document file '{filename}' has an unsupported type; use PDF or DOCX"
+            "Unsupported document type. Use a PDF or DOCX file."
         )
 
     return candidate, _SOURCE_TYPES[extension]
@@ -78,9 +83,9 @@ def extract_document(path: str | Path | None) -> ExtractedDocument:
     )
 
     if not units:
-        message = f"No extractable text was found in '{source_path.name}'"
+        message = "The document does not contain extractable text."
         if source_type == "PDF":
-            message += "; OCR is not supported for scanned PDFs"
+            message += " OCR is not supported for scanned PDFs."
         raise EmptyDocumentError(message)
 
     return ExtractedDocument(

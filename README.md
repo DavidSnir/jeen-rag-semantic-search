@@ -5,12 +5,12 @@ content with Gemini embeddings and PostgreSQL/pgvector semantic search.
 
 ## Status
 
-Stage 6 provides functional, synchronous document indexing and semantic search
-for PDF and DOCX content. Search creates a Gemini retrieval-query embedding and
-returns the nearest PostgreSQL/pgvector chunks within the selected `fixed`,
-`sentence`, or `paragraph` strategy. Duplicate indexing is skipped and changed
-content is atomically replaced within the documented filename and strategy
-scope. Generated answers and index reset are not implemented.
+Stage 7 provides hardened, synchronous document indexing and semantic search for
+PDF and DOCX content. Expected validation, Gemini, and PostgreSQL failures use
+safe application exceptions, concise CLI messages, and predictable exit codes
+without tracebacks. Duplicate indexing is skipped and changed content is
+atomically replaced within the documented filename and strategy scope.
+Generated answers and index reset are not implemented.
 
 ## Runtime
 
@@ -339,7 +339,7 @@ python -m pytest tests/unit/test_document_hashing.py \
   tests/unit/test_chunk_persistence.py
 ```
 
-Run the Stage 6 unit tests with:
+Run the Stage 6 semantic-search unit tests with:
 
 ```bash
 python -m pytest tests/unit/test_query_embeddings.py \
@@ -354,7 +354,16 @@ Gemini fakes. Automated document and query embedding tests do not download
 documents or spaCy models, require Gemini credentials, or contact Gemini. CI
 uses no Gemini key and all Gemini responses and failures are mocked. CI uses
 pytest discovery for the complete unit and integration test directories, so
-new Stage 6 tests do not require a manually maintained test-file list.
+new tests do not require a manually maintained test-file list.
+
+Run the Stage 7 error-handling tests with:
+
+```bash
+python -m pytest tests/unit/test_cli_error_handling.py \
+  tests/unit/test_root_entrypoints.py \
+  tests/unit/test_database_connection.py \
+  tests/unit/test_database_repository_errors.py
+```
 
 Database integration tests require the healthy Compose service and a matching
 `POSTGRES_URL` in `.env`:
@@ -392,6 +401,39 @@ python -m rag_app.cli reset --yes
 
 Generated answers and destructive index reset are not implemented.
 `database-init` and `database-check` remain functional database commands.
+
+## Troubleshooting
+
+Expected application failures are written to standard error without a Python
+traceback. The root scripts and unified commands use the same application
+handlers and exit-code contract.
+
+| Exit code | Meaning |
+| ---: | --- |
+| `0` | Successful indexing, duplicate skip, replacement, populated search, or empty search |
+| `1` | Expected application, configuration, Gemini, PostgreSQL, or unavailable-feature failure |
+| `2` | Invalid command syntax, missing option, unsupported strategy, invalid query, invalid `top_k`, or missing reset confirmation |
+
+| Symptom | Action |
+| --- | --- |
+| `PostgreSQL is unavailable` | Start the database service and verify that `POSTGRES_URL` targets it. |
+| `The database schema is not ready` | Run `python -m rag_app.cli database-init`, then rerun `database-check`. Verify the pinned PostgreSQL and pgvector versions if initialization fails. |
+| Missing `GEMINI_API_KEY` | Set the variable in the environment or uncommitted `.env` file. |
+| Gemini authentication or permission failure | Verify `GEMINI_API_KEY` and that the associated project can use the configured embedding model. |
+| Gemini quota or rate-limit failure | Check the Gemini project's quota and billing status before retrying manually. The application does not retry automatically. |
+| Unsupported document | Supply a readable PDF or DOCX file. Other extensions are rejected before Gemini or database writes. |
+| Document has no extractable text | Use a document containing embedded text. OCR and image-only scanned PDFs are not supported. |
+| No indexed results found | This is a successful empty search with exit code `0`. Initialize the schema and index content with the selected strategy if results were expected. |
+| Reset is unavailable | `reset --yes` exits with code `1` and does not change the database. |
+
+Run the same coverage gate used by CI with:
+
+```bash
+python -m coverage erase
+python -m coverage run --source=rag_app -m pytest tests/unit
+python -m coverage run --append --source=rag_app -m pytest tests/integration
+python -m coverage report --fail-under=80
+```
 
 ## Architecture
 

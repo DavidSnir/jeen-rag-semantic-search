@@ -35,8 +35,8 @@ def test_pdf_without_embedded_text_is_rejected(filename: str) -> None:
     with pytest.raises(EmptyDocumentError) as caught:
         extract_document(PDF_FIXTURES / filename)
 
-    assert filename in str(caught.value)
-    assert "No extractable text" in str(caught.value)
+    assert filename not in str(caught.value)
+    assert "does not contain extractable text" in str(caught.value)
     assert "OCR is not supported" in str(caught.value)
 
 

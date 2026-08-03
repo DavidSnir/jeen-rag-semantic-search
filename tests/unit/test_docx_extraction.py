@@ -90,8 +90,8 @@ def test_empty_docx_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(EmptyDocumentError) as caught:
         extract_document(path)
 
-    assert "No extractable text" in str(caught.value)
-    assert "empty.docx" in str(caught.value)
+    assert "does not contain extractable text" in str(caught.value)
+    assert "empty.docx" not in str(caught.value)
     assert "OCR" not in str(caught.value)
 
 

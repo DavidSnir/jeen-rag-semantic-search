@@ -171,6 +171,18 @@ def test_sentence_library_failure_is_wrapped_with_original_cause(
     assert caught.value.__cause__ is failure
 
 
+def test_unexpected_sentence_programming_error_is_not_converted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail() -> None:
+        raise TypeError("programming bug")
+
+    monkeypatch.setattr(chunking, "_get_sentencizer", fail)
+
+    with pytest.raises(TypeError, match="programming bug"):
+        chunk_document(_docx("A sentence."), "sentence")
+
+
 def test_sentence_repeated_execution_is_stable() -> None:
     document = _docx("First. Second. Third.")
 

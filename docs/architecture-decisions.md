@@ -205,3 +205,18 @@ later stages add resolved implementation details without removing them.
 149. Keep full query text, retrieved chunk content, vectors, credentials, raw provider responses, raw database rows, and document hashes out of application logs; log search metadata only.
 150. Return process exit code zero for both populated and empty searches, code one for expected runtime failures, and retain Typer's code two for usage errors.
 151. Enable pgvector's transaction-local strict HNSW iterative scan before retrieval so strategy filtering can continue scanning approximate candidates toward the requested `top_k` without changing the index-compatible query order.
+
+## Stage 7 Error Handling and CLI Hardening
+
+152. Treat `RagAppError` as the stable public boundary for expected validation, configuration, provider, database, persistence, and unavailable-feature failures.
+153. Catch only `RagAppError` in command handlers, print one safe message to standard error, and exit with code one without a traceback; do not convert unrelated programming errors into expected failures.
+154. Retain Typer's code two for command-usage failures, including missing options, invalid queries, invalid `top_k`, unsupported strategies, and missing reset confirmation.
+155. Treat missing, unreadable, non-regular, and unsupported document files as application validation failures with code one because those conditions belong to the shared service boundary rather than command syntax.
+156. Return code zero for indexed, replaced, skipped, populated-search, and empty-search outcomes, and retain code one for confirmed reset because destructive reset remains explicitly unavailable.
+157. Use the same command handler functions for the root scripts and unified CLI so validation, messages, output, and exit codes cannot diverge.
+158. Keep lower layers independent of Typer and process termination; repositories and services raise typed application exceptions and never print user-facing output.
+159. Preserve original Gemini and PostgreSQL exceptions through chaining while excluding raw exception text, credentials, connection URLs, queries, chunk content, vectors, and response bodies from public messages and logs.
+160. Verify database readiness before every Gemini request and complete Gemini embedding before persistence so readiness and provider failures cannot create partial database writes.
+161. Roll back failed writes and reads deterministically, close connections, and re-raise programming errors unchanged after cleanup rather than misclassifying them as persistence failures.
+162. Keep application logging opt-in with a package `NullHandler`; do not add a debug CLI mode or new logging framework for Stage 7.
+163. Normalize strategy strings through the shared application validator, state supported values without reflecting rejected input, and reject unsafe control characters in source filenames.
