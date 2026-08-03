@@ -1,5 +1,6 @@
 """Unit tests for database configuration, connection safety, and CLI errors."""
 
+import logging
 import time
 from unittest.mock import MagicMock
 
@@ -79,7 +80,7 @@ def test_psycopg_connection_failure_is_converted_and_chained(
             pass
 
     assert raised.value.__cause__ is original
-    assert "Database connection failed" in str(raised.value)
+    assert "PostgreSQL is unavailable" in str(raised.value)
     assert database_url not in str(raised.value)
     assert "secret-password" not in str(raised.value)
 
@@ -162,6 +163,88 @@ def test_connection_closes_after_caller_failure(
     connection.close.assert_called_once_with()
 
 
+def test_close_failure_without_primary_error_is_safe_and_chained(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = psycopg.OperationalError("close exposed stage7-password")
+    connection = MagicMock()
+    connection.close.side_effect = original
+    monkeypatch.setattr(
+        connection_module,
+        "load_database_settings",
+        lambda: DatabaseSettings(postgres_url="postgresql://localhost/database"),
+    )
+    monkeypatch.setattr(
+        connection_module.psycopg,
+        "connect",
+        MagicMock(return_value=connection),
+    )
+
+    with pytest.raises(DatabaseOperationError) as raised:
+        with open_database_connection(register_vector_types_on_open=False):
+            pass
+
+    assert raised.value.__cause__ is original
+    assert str(raised.value) == "Database connection cleanup failed."
+    assert "stage7-password" not in str(raised.value)
+
+
+def test_close_failure_does_not_mask_primary_error(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    connection = MagicMock()
+    connection.close.side_effect = psycopg.OperationalError(
+        "close exposed stage7-password"
+    )
+    monkeypatch.setattr(
+        connection_module,
+        "load_database_settings",
+        lambda: DatabaseSettings(postgres_url="postgresql://localhost/database"),
+    )
+    monkeypatch.setattr(
+        connection_module.psycopg,
+        "connect",
+        MagicMock(return_value=connection),
+    )
+
+    with caplog.at_level(logging.WARNING), pytest.raises(
+        RuntimeError, match="primary failure"
+    ):
+        with open_database_connection(register_vector_types_on_open=False):
+            raise RuntimeError("primary failure")
+
+    assert "category=close" in caplog.text
+    assert "stage7-password" not in caplog.text
+
+
+def test_outer_exception_context_does_not_hide_close_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = psycopg.OperationalError("close exposed stage7-password")
+    connection = MagicMock()
+    connection.close.side_effect = original
+    monkeypatch.setattr(
+        connection_module,
+        "load_database_settings",
+        lambda: DatabaseSettings(postgres_url="postgresql://localhost/database"),
+    )
+    monkeypatch.setattr(
+        connection_module.psycopg,
+        "connect",
+        MagicMock(return_value=connection),
+    )
+
+    try:
+        raise RuntimeError("outer handled error")
+    except RuntimeError:
+        with pytest.raises(DatabaseOperationError) as raised:
+            with open_database_connection(register_vector_types_on_open=False):
+                pass
+
+    assert raised.value.__cause__ is original
+    assert "stage7-password" not in str(raised.value)
+
+
 def test_intentional_local_connection_failure_is_prompt_and_safe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -176,7 +259,7 @@ def test_intentional_local_connection_failure_is_prompt_and_safe(
     elapsed = time.monotonic() - started_at
 
     assert elapsed < 7
-    assert "Database connection failed" in str(raised.value)
+    assert "PostgreSQL is unavailable" in str(raised.value)
     assert password not in str(raised.value)
     assert database_url not in str(raised.value)
     assert isinstance(raised.value.__cause__, psycopg.Error)

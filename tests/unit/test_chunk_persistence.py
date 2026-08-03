@@ -21,7 +21,11 @@ from rag_app.documents import (
     EmbeddedDocument,
     IndexingStatus,
 )
-from rag_app.exceptions import PersistenceError, PersistenceVerificationError
+from rag_app.exceptions import (
+    DuplicateStateInconsistencyError,
+    PersistenceError,
+    PersistenceVerificationError,
+)
 
 HASH = "a" * 64
 VECTOR = (1.0,) + (0.0,) * 767
@@ -138,6 +142,7 @@ def test_row_mapping_preserves_metadata_and_omits_created_at() -> None:
     ("document", "document_hash"),
     [
         (_document(source_file="../report.pdf"), HASH),
+        (_document(source_file="unsafe\nreport.pdf"), HASH),
         (_document(), 123),
         (_document(), "A" * 64),
         (_document(), "short"),
@@ -182,9 +187,17 @@ def test_invalid_local_state_fails_before_database_access(
 
 
 class _StateCursor:
-    def __init__(self, rows: list[tuple[str, int]]) -> None:
+    def __init__(
+        self,
+        rows: list[object],
+        *,
+        execute_error: Exception | None = None,
+        fetch_error: Exception | None = None,
+    ) -> None:
         self.rows = rows
         self.calls: list[tuple[str, object]] = []
+        self.execute_error = execute_error
+        self.fetch_error = fetch_error
 
     def __enter__(self) -> "_StateCursor":
         return self
@@ -194,15 +207,22 @@ class _StateCursor:
 
     def execute(self, sql: str, params: object = None) -> "_StateCursor":
         self.calls.append((sql, params))
+        if self.execute_error is not None:
+            raise self.execute_error
         return self
 
-    def fetchall(self) -> list[tuple[str, int]]:
+    def fetchall(self) -> list[object]:
+        if self.fetch_error is not None:
+            raise self.fetch_error
         return self.rows
 
 
 class _StateConnection:
-    def __init__(self, cursor: _StateCursor) -> None:
+    def __init__(
+        self, cursor: _StateCursor, *, commit_error: Exception | None = None
+    ) -> None:
         self._cursor = cursor
+        self.commit_error = commit_error
         self.commits = 0
         self.rollbacks = 0
 
@@ -211,6 +231,8 @@ class _StateConnection:
 
     def commit(self) -> None:
         self.commits += 1
+        if self.commit_error is not None:
+            raise self.commit_error
 
     def rollback(self) -> None:
         self.rollbacks += 1
@@ -251,6 +273,69 @@ def test_indexed_state_is_immutable_and_queries_are_parameterized(
     assert state.total_chunk_count == count
     assert cursor.calls[0][1] == ("report.pdf", "fixed")
     assert connection.rollbacks == 1
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        ("not-a-sha256", 1),
+        (HASH, 0),
+        (HASH, True),
+        (HASH,),
+        (HASH, 1, "extra"),
+        123,
+    ],
+)
+def test_malformed_indexed_state_is_typed_and_rolled_back(
+    monkeypatch: pytest.MonkeyPatch, row: object
+) -> None:
+    cursor = _StateCursor([row])
+    connection = _StateConnection(cursor)
+    _use_connection(monkeypatch, connection)
+
+    with pytest.raises(DuplicateStateInconsistencyError):
+        get_indexed_document_state("report.pdf", ChunkingStrategy.fixed)
+
+    assert connection.rollbacks == 1
+    assert connection.commits == 0
+
+
+@pytest.mark.parametrize("failure_stage", ["execute", "fetch"])
+def test_state_read_database_failure_is_safe_chained_and_rolled_back(
+    monkeypatch: pytest.MonkeyPatch, failure_stage: str
+) -> None:
+    secret = "stage7-database-password"
+    original = psycopg.DataError(f"raw SQL params and {secret}")
+    cursor = _StateCursor(
+        [],
+        execute_error=original if failure_stage == "execute" else None,
+        fetch_error=original if failure_stage == "fetch" else None,
+    )
+    connection = _StateConnection(cursor)
+    _use_connection(monkeypatch, connection)
+
+    with pytest.raises(PersistenceError) as raised:
+        get_indexed_document_state("report.pdf", ChunkingStrategy.fixed)
+
+    assert raised.value.__cause__ is original
+    assert secret not in str(raised.value)
+    assert "raw SQL" not in str(raised.value)
+    assert connection.rollbacks == 1
+
+
+def test_state_read_programming_error_is_rolled_back_but_not_converted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = RuntimeError("programming bug")
+    cursor = _StateCursor([], execute_error=original)
+    connection = _StateConnection(cursor)
+    _use_connection(monkeypatch, connection)
+
+    with pytest.raises(RuntimeError, match="programming bug"):
+        get_indexed_document_state("report.pdf", ChunkingStrategy.fixed)
+
+    assert connection.rollbacks == 1
+    assert connection.commits == 0
 
 
 class _WriteCursor(_StateCursor):
@@ -348,5 +433,43 @@ def test_copy_failure_rolls_back_and_is_safely_wrapped(
 
     assert raised.value.__cause__ is original
     assert "raw content" not in str(raised.value)
+    assert connection.commits == 0
+    assert connection.rollbacks == 1
+
+
+def test_commit_failure_is_safely_wrapped_and_rolled_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "stage7-database-password"
+    original = psycopg.OperationalError(f"commit exposed {secret}")
+    cursor = _WriteCursor([], ([HASH], 2, 0, 1, 2))
+    connection = _StateConnection(cursor, commit_error=original)
+    _use_connection(monkeypatch, connection)
+
+    with pytest.raises(PersistenceError) as raised:
+        persist_embedded_document(_document(), HASH)
+
+    assert raised.value.__cause__ is original
+    assert str(raised.value) == "Document persistence failed."
+    assert secret not in str(raised.value)
+    assert connection.commits == 1
+    assert connection.rollbacks == 1
+
+
+def test_programming_error_is_rolled_back_but_not_converted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = _WriteCursor([], ([HASH], 2, 0, 1, 2))
+    connection = _StateConnection(cursor)
+    _use_connection(monkeypatch, connection)
+
+    def fail(cursor: object, rows: object) -> None:
+        raise AssertionError("programming bug")
+
+    monkeypatch.setattr(repository, "_insert_rows", fail)
+
+    with pytest.raises(AssertionError, match="programming bug"):
+        persist_embedded_document(_document(), HASH)
+
     assert connection.commits == 0
     assert connection.rollbacks == 1

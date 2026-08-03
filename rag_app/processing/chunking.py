@@ -43,10 +43,9 @@ def validate_chunking_strategy(
     try:
         return ChunkingStrategy(normalized)
     except ValueError as error:
-        supplied = normalized or "<empty>"
         raise InvalidChunkingStrategyError(
-            f"Unsupported chunking strategy '{supplied}'; "
-            f"supported values: {_SUPPORTED_STRATEGIES}"
+            "Unsupported chunking strategy. "
+            f"Use one of: {_SUPPORTED_STRATEGIES}."
         ) from error
 
 
@@ -174,7 +173,7 @@ def _split_sentences(text: str) -> list[str]:
         if len(text) >= pipeline.max_length:
             pipeline.max_length = len(text) + 1
         parsed_text = pipeline(text)
-    except Exception as error:
+    except (RuntimeError, ValueError) as error:
         raise ChunkGenerationError(
             "The English sentence segmenter could not process document content"
         ) from error

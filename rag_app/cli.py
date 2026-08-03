@@ -12,7 +12,8 @@ from rag_app.database.repository import (
     initialize_schema,
 )
 from rag_app.documents import ChunkingStrategy, IndexingStatus, SearchResponse
-from rag_app.exceptions import RagAppError
+from rag_app.exceptions import InvalidChunkingStrategyError, RagAppError
+from rag_app.processing.chunking import validate_chunking_strategy
 from rag_app.services.indexing import index_document, reset_index
 from rag_app.services.search import search_documents
 
@@ -47,17 +48,18 @@ def database_check() -> None:
     )
 
 
-def _validate_document_file(path: Path) -> Path:
-    if path.suffix.lower() not in {".pdf", ".docx"}:
-        raise typer.BadParameter("File must have a .pdf or .docx extension")
-    return path
-
-
 def _validate_query(query: str) -> str:
     canonical_query = query.strip()
     if not canonical_query:
         raise typer.BadParameter("Query must not be empty")
     return canonical_query
+
+
+def _validate_strategy(strategy: str) -> str:
+    try:
+        return validate_chunking_strategy(strategy).value
+    except InvalidChunkingStrategyError as error:
+        raise typer.BadParameter(str(error)) from error
 
 
 @app.command()
@@ -66,21 +68,20 @@ def index(
         Path,
         typer.Option(
             "--file",
-            exists=True,
-            file_okay=True,
-            dir_okay=False,
-            readable=True,
-            callback=_validate_document_file,
             help="PDF or DOCX document to index.",
         ),
     ],
     strategy: Annotated[
-        ChunkingStrategy,
-        typer.Option("--strategy", help="Chunking strategy to use."),
+        str,
+        typer.Option(
+            "--strategy",
+            callback=_validate_strategy,
+            help="Chunking strategy: fixed, sentence, or paragraph.",
+        ),
     ],
 ) -> None:
     """Index one document with the selected chunking strategy."""
-    result = _run(index_document, file, strategy.value)
+    result = _run(index_document, file, strategy)
     status_label = {
         IndexingStatus.indexed: "Indexed document",
         IndexingStatus.replaced: "Replaced existing document",
@@ -104,8 +105,12 @@ def search(
         ),
     ],
     strategy: Annotated[
-        ChunkingStrategy,
-        typer.Option("--strategy", help="Chunking strategy to search."),
+        str,
+        typer.Option(
+            "--strategy",
+            callback=_validate_strategy,
+            help="Chunking strategy: fixed, sentence, or paragraph.",
+        ),
     ],
     top_k: Annotated[
         int,
@@ -113,7 +118,7 @@ def search(
     ] = DEFAULT_TOP_K,
 ) -> None:
     """Search indexed content using semantic similarity."""
-    response = _run(search_documents, query, strategy.value, top_k)
+    response = _run(search_documents, query, strategy, top_k)
     _display_search_response(response)
 
 
@@ -145,7 +150,7 @@ def reset(
         typer.Option("--yes", help="Confirm removal of all indexed content."),
     ] = False,
 ) -> None:
-    """Remove all indexed content after explicit confirmation."""
+    """Report that destructive index reset is currently unavailable."""
     if not yes:
         raise typer.BadParameter("Pass --yes to confirm reset", param_hint="--yes")
     _run(reset_index)

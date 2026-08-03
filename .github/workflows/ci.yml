@@ -6,7 +6,7 @@ on:
       - main
 
 jobs:
-  stage-6:
+  stage-7:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -67,7 +67,7 @@ jobs:
       - name: Verify complete database readiness
         run: python -m rag_app.cli database-check
 
-      - name: Run Stage 1 through Stage 6 unit tests with mocked Gemini
+      - name: Run Stage 1 through Stage 7 unit tests with mocked Gemini
         run: python -m coverage run --source=rag_app -m pytest tests/unit
 
       - name: Run database integration tests

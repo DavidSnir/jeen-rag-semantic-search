@@ -69,6 +69,9 @@ def search_similar_chunks(
             raise SemanticSearchError(
                 "Semantic search query failed."
             ) from error
+        except Exception:
+            _rollback_quietly(connection)
+            raise
 
 
 def _validate_repository_input(

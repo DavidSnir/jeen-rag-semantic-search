@@ -76,7 +76,6 @@ def test_expected_index_failure_is_safe_and_uses_exit_one(
     "arguments",
     [
         ["index", "--strategy", "fixed"],
-        ["index", "--file", "missing.pdf", "--strategy", "fixed"],
         ["index", "--file", __file__, "--strategy", "invalid"],
     ],
 )
@@ -84,3 +83,71 @@ def test_usage_failures_keep_exit_two(arguments: list[str]) -> None:
     result = CliRunner().invoke(cli_module.app, arguments)
 
     assert result.exit_code == 2
+
+
+def test_missing_file_is_application_failure_with_exit_one(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.pdf"
+
+    result = CliRunner().invoke(
+        cli_module.app,
+        ["index", "--file", str(missing), "--strategy", "fixed"],
+    )
+
+    assert result.exit_code == 1
+    assert result.output == "Error: Document file was not found: missing.pdf\n"
+    assert str(tmp_path) not in result.output
+    assert "Traceback" not in result.output
+
+
+def test_unsupported_file_is_application_failure_with_exit_one(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "notes.txt"
+    path.write_text("sensitive content", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli_module.app,
+        ["index", "--file", str(path), "--strategy", "fixed"],
+    )
+
+    assert result.exit_code == 1
+    assert result.output == (
+        "Error: Unsupported document type. Use a PDF or DOCX file.\n"
+    )
+    assert "sensitive content" not in result.output
+    assert "Traceback" not in result.output
+
+
+def test_strategy_is_normalized_and_invalid_value_is_not_reflected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "document.pdf"
+    path.write_bytes(b"test")
+    received: list[str] = []
+
+    def index(file: Path, strategy: str) -> IndexingResult:
+        received.append(strategy)
+        return IndexingResult(
+            IndexingStatus.indexed,
+            "document.pdf",
+            ChunkingStrategy.fixed,
+            1,
+            0.01,
+        )
+
+    monkeypatch.setattr(cli_module, "index_document", index)
+    normalized = CliRunner().invoke(
+        cli_module.app,
+        ["index", "--file", str(path), "--strategy", " FIXED "],
+    )
+    secret = "stage7-secret-strategy"
+    rejected = CliRunner().invoke(
+        cli_module.app,
+        ["index", "--file", str(path), "--strategy", secret],
+    )
+
+    assert normalized.exit_code == 0
+    assert received == ["fixed"]
+    assert rejected.exit_code == 2
+    assert secret not in rejected.output
+    assert "fixed, sentence, paragraph" in rejected.output

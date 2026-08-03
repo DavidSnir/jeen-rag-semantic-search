@@ -37,7 +37,7 @@ def test_validate_document_path_rejects_unsupplied_path(
 def test_validate_document_path_rejects_missing_file(tmp_path: Path) -> None:
     path = tmp_path / "missing.pdf"
 
-    with pytest.raises(InvalidDocumentPathError, match="missing.pdf.*does not exist"):
+    with pytest.raises(InvalidDocumentPathError, match="not found: missing.pdf"):
         validate_document_path(path)
 
 
@@ -77,7 +77,7 @@ def test_validate_document_path_rejects_unsupported_extension(
     path = tmp_path / filename
     path.write_text("synthetic", encoding="utf-8")
 
-    with pytest.raises(UnsupportedDocumentTypeError, match="unsupported type"):
+    with pytest.raises(UnsupportedDocumentTypeError, match="Unsupported document type"):
         validate_document_path(path)
 
 
@@ -85,7 +85,17 @@ def test_validate_document_path_rejects_missing_extension(tmp_path: Path) -> Non
     path = tmp_path / "document"
     path.write_text("synthetic", encoding="utf-8")
 
-    with pytest.raises(UnsupportedDocumentTypeError, match="no supported file extension"):
+    with pytest.raises(UnsupportedDocumentTypeError, match="Unsupported document type"):
+        validate_document_path(path)
+
+
+def test_validate_document_path_rejects_control_characters(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "unsafe\nname.pdf"
+    path.write_bytes(b"content")
+
+    with pytest.raises(InvalidDocumentPathError, match="control characters"):
         validate_document_path(path)
 
 

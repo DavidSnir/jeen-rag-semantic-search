@@ -107,7 +107,7 @@ def embed_query(
 def _create_client(settings: EmbeddingSettings) -> _GeminiClient:
     try:
         return genai.Client(api_key=settings.gemini_api_key, vertexai=False)
-    except Exception as error:
+    except (errors.APIError, ValueError, httpx.TransportError) as error:
         raise EmbeddingConfigurationError(
             "The Gemini embedding client could not be configured"
         ) from error
@@ -117,7 +117,7 @@ def _close_client(client: _GeminiClient, settings: EmbeddingSettings) -> None:
     try:
         close = getattr(client, "close")
         close()
-    except Exception:
+    except (errors.APIError, ValueError, httpx.TransportError):
         logger.warning(
             "Gemini embedding client cleanup failed model=%s",
             settings.embedding_model,
@@ -299,16 +299,23 @@ def _request_vectors(
             config=request_config,
         )
     except errors.APIError as error:
-        category = _api_error_category(error.code)
+        status_code = _normalize_status_code(error.code)
+        authentication_failed = _is_api_key_error(error)
+        category = (
+            "authentication"
+            if authentication_failed
+            else _api_error_category(status_code)
+        )
         logger.warning(
             "Gemini embedding request failed category=%s status_code=%s "
             "model=%s chunks=%d",
             category,
-            error.code,
+            status_code if status_code is not None else "unknown",
             settings.embedding_model,
             len(contents),
         )
-        raise GeminiRequestError(_api_error_message(error.code)) from error
+        message_status = 401 if authentication_failed else status_code
+        raise GeminiRequestError(_api_error_message(message_status)) from error
     except (ValueError, httpx.TransportError) as error:
         logger.warning(
             "Gemini embedding request failed category=transport-or-protocol "
@@ -316,7 +323,9 @@ def _request_vectors(
             settings.embedding_model,
             len(contents),
         )
-        raise GeminiRequestError("Gemini embedding generation failed") from error
+        raise GeminiRequestError(
+            "Gemini embedding request failed. Check network connectivity."
+        ) from error
 
     try:
         embeddings = _response_embeddings(response, len(contents))
@@ -375,7 +384,31 @@ def _log_validation_failure(
     )
 
 
-def _api_error_category(status_code: int) -> str:
+def _normalize_status_code(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
+def _is_api_key_error(error: errors.APIError) -> bool:
+    details = getattr(error, "details", None)
+    if not isinstance(details, dict):
+        return False
+    error_details = details.get("error", details)
+    if not isinstance(error_details, dict):
+        return False
+    provider_details = error_details.get("details", ())
+    if not isinstance(provider_details, list):
+        return False
+    return any(
+        isinstance(detail, dict) and detail.get("reason") == "API_KEY_INVALID"
+        for detail in provider_details
+    )
+
+
+def _api_error_category(status_code: int | None) -> str:
+    if status_code is None:
+        return "provider-failure"
     if status_code == 401:
         return "authentication"
     if status_code == 403:
@@ -391,20 +424,22 @@ def _api_error_category(status_code: int) -> str:
     return "provider-failure"
 
 
-def _api_error_message(status_code: int) -> str:
+def _api_error_message(status_code: int | None) -> str:
     messages = {
-        401: "Gemini authentication failed",
-        403: "Gemini access was denied",
-        404: "The configured embedding model was not found",
-        429: "Gemini quota or rate limit was exceeded",
+        401: "Gemini authentication failed. Check GEMINI_API_KEY.",
+        403: "Gemini permission was denied. Check API access for GEMINI_API_KEY.",
+        404: "The configured Gemini embedding model was not found.",
+        429: "Gemini quota or rate limit was exceeded.",
     }
     if status_code in messages:
         return messages[status_code]
+    if status_code is None:
+        return "Gemini embedding generation failed."
     if 400 <= status_code < 500:
-        return "Gemini rejected the embedding request"
+        return "Gemini rejected the embedding request."
     if 500 <= status_code < 600:
-        return "Gemini is temporarily unavailable"
-    return "Gemini embedding generation failed"
+        return "Gemini is temporarily unavailable."
+    return "Gemini embedding generation failed."
 
 
 __all__ = ["embed_document", "embed_query"]

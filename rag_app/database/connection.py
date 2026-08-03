@@ -1,5 +1,6 @@
 """Shared Psycopg connection management and pgvector type registration."""
 
+import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -10,6 +11,8 @@ from psycopg import Connection
 
 from rag_app.config import load_database_settings
 from rag_app.exceptions import DatabaseConnectionError, DatabaseOperationError
+
+logger = logging.getLogger(__name__)
 
 
 @contextmanager
@@ -30,10 +33,10 @@ def open_database_connection(
         )
     except psycopg.Error as error:
         raise DatabaseConnectionError(
-            "Database connection failed. Check that PostgreSQL is running and "
-            "the configured target is reachable."
+            "PostgreSQL is unavailable. Check POSTGRES_URL and the database service."
         ) from error
 
+    completed = False
     try:
         if register_vector_types_on_open:
             try:
@@ -45,11 +48,19 @@ def open_database_connection(
             except psycopg.Error as error:
                 _rollback_quietly(connection)
                 raise DatabaseOperationError(
-                    "Database connection setup failed."
+                    "PostgreSQL connection setup failed. Verify pgvector is installed."
                 ) from error
         yield connection
+        completed = True
     finally:
-        connection.close()
+        try:
+            connection.close()
+        except psycopg.Error as error:
+            if completed:
+                raise DatabaseOperationError(
+                    "Database connection cleanup failed."
+                ) from error
+            logger.warning("Database connection cleanup failed category=close")
 
 
 def register_vector_types(connection: Connection[Any]) -> None:
@@ -58,8 +69,7 @@ def register_vector_types(connection: Connection[Any]) -> None:
         register_vector(connection)
     except psycopg.Error as error:
         raise DatabaseOperationError(
-            "Database vector types could not be registered. Ensure the vector "
-            "extension is installed."
+            "PostgreSQL vector support is unavailable. Verify pgvector is installed."
         ) from error
 
 

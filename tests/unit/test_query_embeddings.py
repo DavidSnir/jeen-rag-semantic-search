@@ -339,7 +339,9 @@ def test_cleanup_failure_does_not_expose_secrets_or_hide_result(
 ) -> None:
     client = OwnedFakeClient(
         _response(_vector()),
-        close_error=RuntimeError(f"cleanup {SYNTHETIC_KEY} {SENSITIVE_QUERY}"),
+        close_error=httpx.TransportError(
+            f"cleanup {SYNTHETIC_KEY} {SENSITIVE_QUERY}"
+        ),
     )
     monkeypatch.setattr(gemini_module.genai, "Client", lambda **kwargs: client)
 
@@ -380,11 +382,35 @@ def test_client_creation_failure_is_safe_and_chained(
     assert SENSITIVE_QUERY not in public_output
 
 
+def test_unexpected_client_creation_error_is_not_converted(
+    monkeypatch: pytest.MonkeyPatch, settings: EmbeddingSettings
+) -> None:
+    def fail_client_creation(**kwargs: object) -> None:
+        raise TypeError("programming bug")
+
+    monkeypatch.setattr(gemini_module.genai, "Client", fail_client_creation)
+
+    with pytest.raises(TypeError, match="programming bug"):
+        embed_query("valid query", settings)
+
+
+def test_unexpected_client_cleanup_error_is_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch, settings: EmbeddingSettings
+) -> None:
+    client = OwnedFakeClient(
+        _response(_vector()), close_error=AssertionError("programming bug")
+    )
+    monkeypatch.setattr(gemini_module.genai, "Client", lambda **kwargs: client)
+
+    with pytest.raises(AssertionError, match="programming bug"):
+        embed_query("valid query", settings)
+
+
 @pytest.mark.parametrize(
     ("status_code", "message"),
     [
         (401, "authentication failed"),
-        (403, "access was denied"),
+        (403, "permission was denied"),
         (404, "model was not found"),
         (429, "quota or rate limit"),
         (400, "rejected the embedding request"),
@@ -421,6 +447,61 @@ def test_sdk_api_failures_are_safe_chained_and_not_retried(
     assert SENSITIVE_QUERY not in public_output
 
 
+def test_malformed_sdk_status_code_is_handled_safely(
+    settings: EmbeddingSettings, caplog: pytest.LogCaptureFixture
+) -> None:
+    malformed_code = f"invalid-{SYNTHETIC_KEY}"
+    original = errors.APIError(
+        malformed_code,  # type: ignore[arg-type]
+        {"error": {"code": malformed_code, "message": SENSITIVE_QUERY}},
+    )
+    client = FakeClient(error=original)
+
+    with caplog.at_level(logging.INFO), pytest.raises(GeminiRequestError) as raised:
+        embed_query(SENSITIVE_QUERY, settings, client=client)
+
+    assert raised.value.__cause__ is original
+    assert str(raised.value) == "Gemini embedding generation failed."
+    public_output = str(raised.value) + caplog.text
+    assert SYNTHETIC_KEY not in public_output
+    assert SENSITIVE_QUERY not in public_output
+    assert "status_code=unknown" in caplog.text
+
+
+def test_api_key_invalid_reason_is_classified_as_authentication_failure(
+    settings: EmbeddingSettings, caplog: pytest.LogCaptureFixture
+) -> None:
+    original = errors.APIError(
+        400,
+        {
+            "error": {
+                "code": 400,
+                "status": "INVALID_ARGUMENT",
+                "message": f"invalid {SYNTHETIC_KEY} for {SENSITIVE_QUERY}",
+                "details": [
+                    {
+                        "reason": "API_KEY_INVALID",
+                        "metadata": {"key": SYNTHETIC_KEY},
+                    }
+                ],
+            }
+        },
+    )
+    client = FakeClient(error=original)
+
+    with caplog.at_level(logging.INFO), pytest.raises(GeminiRequestError) as raised:
+        embed_query(SENSITIVE_QUERY, settings, client=client)
+
+    assert raised.value.__cause__ is original
+    assert str(raised.value) == (
+        "Gemini authentication failed. Check GEMINI_API_KEY."
+    )
+    public_output = str(raised.value) + caplog.text
+    assert SYNTHETIC_KEY not in public_output
+    assert SENSITIVE_QUERY not in public_output
+    assert "category=authentication" in caplog.text
+
+
 @pytest.mark.parametrize(
     "original",
     [
@@ -440,7 +521,9 @@ def test_transport_and_protocol_failures_are_safe_chained_and_not_retried(
         embed_query(SENSITIVE_QUERY, settings, client=client)
 
     assert raised.value.__cause__ is original
-    assert str(raised.value) == "Gemini embedding generation failed"
+    assert str(raised.value) == (
+        "Gemini embedding request failed. Check network connectivity."
+    )
     assert len(client.models.calls) == 1
     public_output = str(raised.value) + caplog.text
     assert SYNTHETIC_KEY not in public_output

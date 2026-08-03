@@ -202,13 +202,17 @@ def initialize_schema() -> DatabaseStatus:
         except _SchemaMismatchError as error:
             _rollback_quietly(connection)
             raise DatabaseSchemaError(
-                f"Database schema initialization failed: {error}"
+                "Database schema initialization failed. Verify PostgreSQL and "
+                "pgvector versions."
             ) from error
         except (psycopg.Error, DatabaseOperationError) as error:
             _rollback_quietly(connection)
             raise DatabaseSchemaError(
                 "Database schema initialization failed."
             ) from error
+        except Exception:
+            _rollback_quietly(connection)
+            raise
 
 
 def check_database_readiness() -> DatabaseStatus:
@@ -224,7 +228,8 @@ def check_database_readiness() -> DatabaseStatus:
         except _SchemaMismatchError as error:
             _rollback_quietly(connection)
             raise DatabaseSchemaError(
-                f"Database schema validation failed: {error}"
+                "The database schema is not ready. Run the database initialization "
+                "command and verify PostgreSQL and pgvector versions."
             ) from error
         except DatabaseOperationError:
             _rollback_quietly(connection)
@@ -234,6 +239,9 @@ def check_database_readiness() -> DatabaseStatus:
             raise DatabaseOperationError(
                 "Database readiness check failed."
             ) from error
+        except Exception:
+            _rollback_quietly(connection)
+            raise
 
 
 def get_indexed_document_state(
@@ -256,6 +264,9 @@ def get_indexed_document_state(
             raise PersistenceError(
                 "Indexed document state could not be read."
             ) from error
+        except Exception:
+            _rollback_quietly(connection)
+            raise
 
 
 def persist_embedded_document(
@@ -319,11 +330,12 @@ def persist_embedded_document(
         except RagAppError:
             _rollback_quietly(connection)
             raise
-        except Exception as error:
+        except psycopg.Error as error:
             _rollback_quietly(connection)
-            raise PersistenceError(
-                f"Document persistence failed for '{document.source_file}'."
-            ) from error
+            raise PersistenceError("Document persistence failed.") from error
+        except Exception:
+            _rollback_quietly(connection)
+            raise
 
 
 def _validate_identity(source_file: str, strategy: ChunkingStrategy) -> None:
@@ -429,7 +441,10 @@ def _is_safe_basename(source_file: object) -> bool:
     return (
         isinstance(source_file, str)
         and bool(source_file.strip())
-        and "\x00" not in source_file
+        and not any(
+            ord(character) < 32 or ord(character) == 127
+            for character in source_file
+        )
         and source_file not in {".", ".."}
         and Path(source_file).name == source_file
         and PureWindowsPath(source_file).name == source_file
@@ -468,9 +483,16 @@ def _read_indexed_document_state(
         (source_file, strategy.value),
     ).fetchall()
     versions: list[IndexedDocumentVersion] = []
-    for document_hash, chunk_count in rows:
+    for row in rows:
+        try:
+            document_hash, chunk_count = row
+        except (TypeError, ValueError) as error:
+            raise DuplicateStateInconsistencyError(
+                "Stored document-version state is inconsistent."
+            ) from error
         if (
             not isinstance(document_hash, str)
+            or _SHA256_PATTERN.fullmatch(document_hash) is None
             or not isinstance(chunk_count, int)
             or isinstance(chunk_count, bool)
             or chunk_count < 1

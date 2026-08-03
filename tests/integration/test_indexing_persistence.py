@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+import psycopg
 from dotenv import load_dotenv
 
 import rag_app.database.repository as repository
@@ -327,7 +328,7 @@ def test_insertion_failure_after_deletion_rolls_back_the_old_rows(
             (source_file, strategy.value),
         ).fetchone()[0]
         rows_seen_after_delete.append(remaining)
-        raise RuntimeError("forced insertion failure")
+        raise psycopg.DataError("forced insertion failure")
 
     monkeypatch.setattr(repository, "_insert_rows", fail_insertion)
 

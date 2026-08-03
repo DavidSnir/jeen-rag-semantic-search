@@ -130,7 +130,7 @@ def index_document(
 
 def reset_index() -> NoReturn:
     """Keep reset unavailable until its dedicated implementation stage."""
-    raise FeatureUnavailableError("Index reset is not implemented")
+    raise FeatureUnavailableError("Index reset is not implemented.")
 
 
 def _validate_stage_metadata(

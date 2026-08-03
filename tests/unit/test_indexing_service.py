@@ -22,14 +22,17 @@ from rag_app.documents import (
 from rag_app.exceptions import (
     ChunkGenerationError,
     DocumentExtractionError,
+    EmptyDocumentError,
+    FeatureUnavailableError,
     GeminiRequestError,
     IndexingPipelineError,
     PersistenceError,
 )
-from rag_app.services.indexing import index_document
+from rag_app.services.indexing import index_document, reset_index
 
 HASH = "a" * 64
 VECTOR = (1.0,) + (0.0,) * 767
+FIXTURES = Path(__file__).parents[1] / "fixtures"
 
 
 def _documents() -> tuple[ExtractedDocument, ChunkedDocument, EmbeddedDocument]:
@@ -60,6 +63,8 @@ def _invoke(
     chunker_error: Exception | None = None,
     embedder_error: Exception | None = None,
     persister_error: Exception | None = None,
+    readiness_error: Exception | None = None,
+    state_error: Exception | None = None,
     persistence_status: IndexingStatus = IndexingStatus.indexed,
     recorded_calls: list[str] | None = None,
     hash_value: object = HASH,
@@ -77,6 +82,8 @@ def _invoke(
 
     def ready() -> None:
         calls.append("database-ready")
+        if readiness_error:
+            raise readiness_error
 
     def hash_file(path: Path) -> str:
         calls.append("hash")
@@ -84,6 +91,8 @@ def _invoke(
 
     def read_state(source_file: str, strategy: ChunkingStrategy) -> IndexedDocumentState:
         calls.append("preflight")
+        if state_error:
+            raise state_error
         assert source_file == "report.pdf"
         assert strategy is ChunkingStrategy.fixed
         return state or IndexedDocumentState(())
@@ -212,6 +221,59 @@ def test_stage_failure_prevents_later_work(
         _invoke(**{keyword: error}, recorded_calls=calls)
 
     assert forbidden_calls.isdisjoint(calls)
+
+
+@pytest.mark.parametrize(
+    ("keyword", "expected_calls"),
+    [
+        ("readiness_error", ["validate-path", "validate-strategy", "database-ready"]),
+        (
+            "state_error",
+            [
+                "validate-path",
+                "validate-strategy",
+                "database-ready",
+                "hash",
+                "preflight",
+            ],
+        ),
+    ],
+)
+def test_database_preflight_failures_prevent_gemini_and_persistence(
+    keyword: str, expected_calls: list[str]
+) -> None:
+    calls: list[str] = []
+    error = PersistenceError("The database schema is not ready.")
+
+    with pytest.raises(PersistenceError):
+        _invoke(**{keyword: error}, recorded_calls=calls)
+
+    assert calls == expected_calls
+    assert "embed" not in calls
+    assert "persist" not in calls
+
+
+def test_empty_document_prevents_gemini_and_persistence() -> None:
+    calls: list[str] = []
+    path = FIXTURES / "pdf" / "empty.pdf"
+
+    with pytest.raises(EmptyDocumentError, match="does not contain extractable text"):
+        index_document(
+            path,
+            "fixed",
+            readiness_checker=lambda: calls.append("readiness"),
+            hashing_function=lambda source_path: HASH,
+            state_reader=lambda source_file, strategy: IndexedDocumentState(()),
+            embedder=lambda document: calls.append("embed"),  # type: ignore[arg-type,return-value]
+            persister=lambda document, document_hash: calls.append("persist"),  # type: ignore[arg-type,return-value]
+        )
+
+    assert calls == ["readiness"]
+
+
+def test_reset_is_typed_and_unavailable() -> None:
+    with pytest.raises(FeatureUnavailableError, match="not implemented"):
+        reset_index()
 
 
 def test_service_prints_nothing(capsys: pytest.CaptureFixture[str]) -> None:

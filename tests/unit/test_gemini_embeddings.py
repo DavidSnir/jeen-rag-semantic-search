@@ -518,7 +518,7 @@ def test_one_invalid_vector_returns_no_partial_document(
     ("status_code", "message"),
     [
         (401, "authentication failed"),
-        (403, "access was denied"),
+        (403, "permission was denied"),
         (404, "model was not found"),
         (429, "quota or rate limit"),
         (400, "rejected the embedding request"),
