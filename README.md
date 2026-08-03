@@ -5,10 +5,12 @@ content with Gemini embeddings and PostgreSQL/pgvector semantic search.
 
 ## Status
 
-Stage 1 provides a reproducible PostgreSQL 17 and pgvector 0.8.2 environment,
-an idempotent database schema, and application-level readiness verification.
-Document extraction, chunking, Gemini embeddings, production persistence,
-indexing, and semantic search are not implemented yet.
+Stage 2 adds validated PDF and DOCX ingestion, page-aware PDF text extraction,
+ordered DOCX paragraph and table extraction, shared text cleaning, recurring PDF
+header and footer removal, and empty-document detection. Stage 1's reproducible
+PostgreSQL 17 and pgvector 0.8.2 environment, idempotent schema, and readiness
+verification remain available. Chunking, Gemini embeddings, document
+persistence, indexing, and semantic search are not implemented yet.
 
 ## Runtime
 
@@ -61,8 +63,25 @@ requires changing the password component of `POSTGRES_URL`. URL-encode any
 URI-special characters used in that component. Replace the example password
 before starting PostgreSQL. Never commit `.env` or real credentials.
 
-`GEMINI_API_KEY` may remain empty for Stage 1 database setup and tests. No Gemini
-request is made by this stage.
+`GEMINI_API_KEY` may remain empty for Stage 1 database operations and Stage 2
+document tests. No Gemini request is made by either stage.
+
+## Document Extraction
+
+The application extraction boundary validates that a supplied path exists,
+points to a readable regular file, and has a supported extension. `.pdf` and
+`.docx` extensions are accepted case-insensitively.
+
+PDF text is extracted page by page with one-based physical page numbers. Blank
+pages are omitted without renumbering later pages. Recurring text is removed
+only from conservative page-edge regions. DOCX paragraphs and table rows are
+extracted from the main body in their original relative order; table cells use
+` | ` as their visible separator. DOCX units do not have page numbers.
+
+OCR is not supported. Scanned or image-only PDFs must contain embedded text to
+be usable. Password-protected PDFs are not supported. Malformed files and
+documents with no extractable text are rejected with safe application errors.
+Extraction is currently an application API rather than a separate CLI command.
 
 ## Database Setup
 
@@ -119,6 +138,19 @@ Unit tests do not require a running database:
 python -m pytest tests/unit
 ```
 
+Run only the Stage 2 document tests with:
+
+```bash
+python -m pytest tests/unit/test_document_validation.py \
+  tests/unit/test_pdf_extraction.py \
+  tests/unit/test_docx_extraction.py \
+  tests/unit/test_text_cleaning.py
+```
+
+These tests use only small synthetic fixtures under `tests/fixtures`; they do
+not download documents, require Gemini credentials, or contact external
+services.
+
 Database integration tests require the healthy Compose service and a matching
 `POSTGRES_URL` in `.env`:
 
@@ -146,14 +178,17 @@ python -m rag_app.cli reset --yes
 ```
 
 The supported chunking strategies will be `fixed`, `sentence`, and `paragraph`.
-These commands currently expose help and validate their arguments, but report
-that application functionality is unavailable. Only `database-init` and
-`database-check` are functional in Stage 1.
+The public indexing and search workflows remain incomplete because chunking,
+embeddings, and persistence are not connected. The commands expose help and
+validate their arguments, but report that application functionality is
+unavailable. Only `database-init` and `database-check` are currently functional.
 
 ## Architecture
 
-- `rag_app/extractors`: structured PDF and DOCX text extraction.
-- `rag_app/processing`: cleaning and the three chunking strategies.
+- `rag_app/extractors`: implemented validation and structured PDF/DOCX text
+  extraction.
+- `rag_app/processing`: implemented shared cleaning; the three chunking
+  strategies remain planned.
 - `rag_app/embeddings`: Gemini embedding requests and dimension validation.
 - `rag_app/database`: implemented PostgreSQL connection, schema, and readiness
   boundaries; later persistence and vector search remain planned.
