@@ -99,21 +99,23 @@ and one of three canonical strategies:
   a 1,500-character step. Size is measured in Python characters, not tokens,
   words, bytes, or embedding-model units.
 - `sentence` uses a lazily initialized `spacy.blank("en")` pipeline containing
-  only the Sentencizer. Consecutive sentences are joined with one space up to
-  the shared 2,000-character maximum.
+  only the Sentencizer and returns each detected non-empty sentence as one
+  independent chunk.
 - `paragraph` preserves DOCX extracted-unit boundaries and detects PDF
-  paragraphs at blank lines. Consecutive paragraphs are joined with two
-  newlines up to the shared maximum.
+  paragraphs at blank lines. Each detected non-empty paragraph is returned as
+  one independent chunk.
 
-Normal sentence and paragraph chunks do not overlap. Paragraphs over 2,000
-characters are grouped by sentence, and any individual sentence over 2,000
-characters uses the fixed-size 500-character overlap as a deterministic
-fallback. No downloaded spaCy language model is required.
+Short sentences and paragraphs are never combined. The 2,000-character limit
+is used only as a fallback threshold for an individual oversized semantic unit:
+an oversized paragraph is split into independent sentence chunks, and any
+individual oversized sentence is split into fixed-size chunks with the
+500-character overlap. Normal sentence and paragraph chunks do not overlap.
+No downloaded spaCy language model is required.
 
 Every PDF page is processed independently, so no chunk spans physical pages and
 each PDF chunk retains its one-based source page number. DOCX chunks keep a null
-page number and may group adjacent ordered units where the strategy allows it.
-Chunk indexes are zero-based and continuous across the complete document.
+page number. Chunk ordering always matches source-document ordering, and chunk
+indexes are zero-based and continuous across the complete document.
 Empty results are removed, but meaningful short titles, sentences, paragraphs,
 table rows, and final windows are retained.
 

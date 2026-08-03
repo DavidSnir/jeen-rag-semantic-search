@@ -1,4 +1,10 @@
-"""Deterministic chunking strategies for parser-independent documents."""
+"""Deterministic fixed-size and one-semantic-unit chunking strategies.
+
+Sentence and paragraph strategies emit one detected unit per chunk in source
+order and never combine short units. The 2,000-character limit triggers
+fallback only for an oversized individual unit. Overlap belongs only to fixed
+splitting, including the oversized-sentence fallback.
+"""
 
 from functools import cache
 import re
@@ -53,7 +59,7 @@ def chunk_document(
     document: ExtractedDocument,
     strategy: str | ChunkingStrategy,
 ) -> ChunkedDocument:
-    """Chunk one extracted document without reopening or mutating its source."""
+    """Chunk one extracted document in source order without reopening it."""
     canonical_strategy = validate_chunking_strategy(strategy)
     _validate_document(document)
 
@@ -181,27 +187,15 @@ def _split_sentences(text: str) -> list[str]:
     return [sentence for span in parsed_text.sents if (sentence := span.text.strip())]
 
 
-def _group_sentences(sentences: list[str]) -> list[str]:
+def _split_sentence_chunks(text: str) -> list[str]:
+    """Return each sentence independently, splitting only oversized sentences."""
     chunks: list[str] = []
-    current = ""
-
-    for sentence in sentences:
+    for sentence in _split_sentences(text):
         if len(sentence) > MAX_CHUNK_SIZE:
-            if current:
-                chunks.append(current)
-                current = ""
             chunks.extend(_split_fixed_size(sentence))
-            continue
-
-        candidate = sentence if not current else f"{current} {sentence}"
-        if len(candidate) <= MAX_CHUNK_SIZE:
-            current = candidate
         else:
-            chunks.append(current)
-            current = sentence
+            chunks.append(sentence)
 
-    if current:
-        chunks.append(current)
     return chunks
 
 
@@ -210,15 +204,14 @@ def _chunk_sentences(document: ExtractedDocument) -> list[_RawChunk]:
         return [
             (content, unit.page_number)
             for unit in document.units
-            for content in _group_sentences(_split_sentences(unit.text))
+            for content in _split_sentence_chunks(unit.text)
         ]
 
-    sentences = [
-        sentence
+    return [
+        (content, None)
         for unit in document.units
-        for sentence in _split_sentences(unit.text)
+        for content in _split_sentence_chunks(unit.text)
     ]
-    return [(content, None) for content in _group_sentences(sentences)]
 
 
 def _split_pdf_paragraphs(unit: ExtractedTextUnit) -> list[str]:
@@ -229,28 +222,11 @@ def _split_pdf_paragraphs(unit: ExtractedTextUnit) -> list[str]:
     ]
 
 
-def _group_paragraphs(paragraphs: list[str]) -> list[str]:
-    chunks: list[str] = []
-    current = ""
-
-    for paragraph in paragraphs:
-        if len(paragraph) > MAX_CHUNK_SIZE:
-            if current:
-                chunks.append(current)
-                current = ""
-            chunks.extend(_group_sentences(_split_sentences(paragraph)))
-            continue
-
-        candidate = paragraph if not current else f"{current}\n\n{paragraph}"
-        if len(candidate) <= MAX_CHUNK_SIZE:
-            current = candidate
-        else:
-            chunks.append(current)
-            current = paragraph
-
-    if current:
-        chunks.append(current)
-    return chunks
+def _split_paragraph_chunks(paragraph: str) -> list[str]:
+    """Return one paragraph, or independent sentence fallback chunks."""
+    if len(paragraph) <= MAX_CHUNK_SIZE:
+        return [paragraph]
+    return _split_sentence_chunks(paragraph)
 
 
 def _chunk_paragraphs(document: ExtractedDocument) -> list[_RawChunk]:
@@ -258,11 +234,16 @@ def _chunk_paragraphs(document: ExtractedDocument) -> list[_RawChunk]:
         return [
             (content, unit.page_number)
             for unit in document.units
-            for content in _group_paragraphs(_split_pdf_paragraphs(unit))
+            for paragraph in _split_pdf_paragraphs(unit)
+            for content in _split_paragraph_chunks(paragraph)
         ]
 
     paragraphs = [unit.text.strip() for unit in document.units if unit.text.strip()]
-    return [(content, None) for content in _group_paragraphs(paragraphs)]
+    return [
+        (content, None)
+        for paragraph in paragraphs
+        for content in _split_paragraph_chunks(paragraph)
+    ]
 
 
 __all__ = [
