@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
-from docx import Document
 import pytest
+from docx import Document
 
 from rag_app.exceptions import DocumentExtractionError, EmptyDocumentError
 from rag_app.extractors import extract_document
@@ -14,6 +14,7 @@ DOCX_FIXTURES = Path(__file__).parents[1] / "fixtures" / "docx"
 def test_docx_extracts_paragraphs_and_table_rows_in_body_order() -> None:
     document = extract_document(DOCX_FIXTURES / "ordered-content.docx")
 
+    assert len(document.units) == 5
     assert [unit.text for unit in document.units] == [
         "Before table",
         "A1 | B1",
@@ -113,4 +114,5 @@ def test_malformed_docx_is_reported_without_parser_details() -> None:
 
     assert "malformed.docx" in str(caught.value)
     assert str(DOCX_FIXTURES) not in str(caught.value)
+    assert "package not found" not in str(caught.value).lower()
     assert caught.value.__cause__ is not None

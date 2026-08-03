@@ -122,16 +122,18 @@ def test_fixed_pdf_pages_are_split_independently_with_page_numbers() -> None:
 def test_fixed_docx_units_form_one_ordered_stream_with_two_newlines() -> None:
     result = chunk_document(_docx("First unit", "Second | table row", "Third"), "fixed")
 
+    assert len(result.chunks) == 1
     assert [chunk.content for chunk in result.chunks] == [
         "First unit\n\nSecond | table row\n\nThird"
     ]
+    assert result.source_file == "document.docx"
+    assert result.source_type == "DOCX"
+    assert result.chunking_strategy.value == "fixed"
     assert result.chunks[0].page_number is None
 
 
 def test_fixed_indexes_are_continuous_across_pdf_pages() -> None:
-    result = chunk_document(
-        _pdf((_pattern(2_001), 2), (_pattern(2_001), 5)), "fixed"
-    )
+    result = chunk_document(_pdf((_pattern(2_001), 2), (_pattern(2_001), 5)), "fixed")
 
     assert [chunk.chunk_index for chunk in result.chunks] == [0, 1, 2, 3]
 

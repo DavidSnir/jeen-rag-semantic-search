@@ -1,8 +1,8 @@
 """Unit tests for Stage 5 repository validation and batch persistence."""
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
-from typing import Iterator
 
 import psycopg
 import pytest
@@ -157,9 +157,7 @@ def test_row_mapping_preserves_metadata_and_omits_created_at() -> None:
         (
             replace(
                 _document(),
-                chunks=(
-                    EmbeddedChunk(Chunk("First", 0, 1), (0.0,) * 768),
-                ),
+                chunks=(EmbeddedChunk(Chunk("First", 0, 1), (0.0,) * 768),),
             ),
             HASH,
         ),

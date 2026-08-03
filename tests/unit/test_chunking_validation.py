@@ -27,9 +27,7 @@ def _document(
     return ExtractedDocument(
         source_file="source.docx" if source_type == "DOCX" else "source.pdf",
         source_type=source_type,  # type: ignore[arg-type]
-        units=(
-            ExtractedTextUnit(text=text, position=0, page_number=page_number),
-        ),
+        units=(ExtractedTextUnit(text=text, position=0, page_number=page_number),),
     )
 
 
@@ -94,6 +92,78 @@ def test_chunk_document_rejects_document_without_units() -> None:
     )
 
     with pytest.raises(InvalidChunkingInputError, match="at least one text unit"):
+        chunk_document(document, "fixed")
+
+
+@pytest.mark.parametrize("document", [None, object()])
+def test_chunk_document_rejects_non_document_input_safely(document: object) -> None:
+    with pytest.raises(
+        InvalidChunkingInputError, match="must be an extracted document"
+    ):
+        chunk_document(document, "fixed")  # type: ignore[arg-type]
+
+
+def test_chunk_document_rejects_invalid_document_metadata_safely() -> None:
+    document = ExtractedDocument(
+        source_file=None,  # type: ignore[arg-type]
+        source_type="DOCX",
+        units=(ExtractedTextUnit(text="content", position=0, page_number=None),),
+    )
+
+    with pytest.raises(InvalidChunkingInputError, match="source filename"):
+        chunk_document(document, "fixed")
+
+
+def test_chunk_document_rejects_non_tuple_units_safely() -> None:
+    document = ExtractedDocument(
+        source_file="source.docx",
+        source_type="DOCX",
+        units=[  # type: ignore[arg-type]
+            ExtractedTextUnit(text="content", position=0, page_number=None)
+        ],
+    )
+
+    with pytest.raises(InvalidChunkingInputError, match="ordered tuple"):
+        chunk_document(document, "fixed")
+
+
+def test_chunk_document_rejects_non_unit_members_safely() -> None:
+    document = ExtractedDocument(
+        source_file="source.docx",
+        source_type="DOCX",
+        units=(object(),),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(InvalidChunkingInputError, match="extracted text units"):
+        chunk_document(document, "fixed")
+
+
+def test_chunk_document_rejects_unit_without_string_text_safely() -> None:
+    document = ExtractedDocument(
+        source_file="source.docx",
+        source_type="DOCX",
+        units=(
+            ExtractedTextUnit(  # type: ignore[arg-type]
+                text=None, position=0, page_number=None
+            ),
+        ),
+    )
+
+    with pytest.raises(InvalidChunkingInputError, match="must contain text"):
+        chunk_document(document, "fixed")
+
+
+@pytest.mark.parametrize("position", [-1, 1, True])
+def test_chunk_document_rejects_invalid_unit_positions(
+    position: int,
+) -> None:
+    document = ExtractedDocument(
+        source_file="source.docx",
+        source_type="DOCX",
+        units=(ExtractedTextUnit(text="content", position=position, page_number=None),),
+    )
+
+    with pytest.raises(InvalidChunkingInputError, match="zero-based and continuous"):
         chunk_document(document, "fixed")
 
 

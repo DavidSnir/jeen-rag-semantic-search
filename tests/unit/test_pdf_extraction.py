@@ -14,6 +14,7 @@ PDF_FIXTURES = Path(__file__).parents[1] / "fixtures" / "pdf"
 def test_pdf_extraction_preserves_page_order_and_physical_page_numbers() -> None:
     document = extract_document(PDF_FIXTURES / "multi-page.pdf")
 
+    assert len(document.units) == 2
     assert [unit.text for unit in document.units] == [
         "First page text",
         "Third page text",
@@ -48,6 +49,7 @@ def test_malformed_pdf_is_reported_without_parser_details() -> None:
 
     assert "malformed.pdf" in str(caught.value)
     assert str(PDF_FIXTURES) not in str(caught.value)
+    assert "invalid pdf header" not in str(caught.value).lower()
     assert caught.value.__cause__ is not None
 
 
@@ -89,9 +91,7 @@ def test_header_text_in_the_middle_of_a_page_is_preserved() -> None:
 def test_one_page_pdf_does_not_run_recurring_margin_removal() -> None:
     document = extract_document(PDF_FIXTURES / "single-page.pdf")
 
-    assert document.units[0].text == (
-        "Only Page Heading\nImportant body\nPage 1"
-    )
+    assert document.units[0].text == ("Only Page Heading\nImportant body\nPage 1")
 
 
 def test_margin_candidate_must_appear_on_at_least_half_of_all_pages() -> None:

@@ -14,6 +14,7 @@ from rag_app.documents import (
     EmbeddingVector,
     SearchMatch,
     SearchResponse,
+    SourceType,
 )
 from rag_app.embeddings import embed_query
 from rag_app.exceptions import SearchPipelineError, SearchValidationError
@@ -94,9 +95,7 @@ def _validate_query_vector(vector: object) -> None:
         not isinstance(vector, tuple)
         or len(vector) != EMBEDDING_DIMENSION
         or any(type(value) is not float or not math.isfinite(value) for value in vector)
-        or not math.isclose(
-            math.hypot(*vector), 1.0, rel_tol=1e-12, abs_tol=1e-12
-        )
+        or not math.isclose(math.hypot(*vector), 1.0, rel_tol=1e-12, abs_tol=1e-12)
     ):
         raise SearchPipelineError(
             "The query embedding stage returned an invalid normalized vector."
@@ -188,15 +187,18 @@ def _validate_distance(value: object) -> float:
     return distance
 
 
-def _validate_source_type(value: object) -> str:
-    if not isinstance(value, str) or value not in ("PDF", "DOCX"):
-        raise SearchPipelineError(
-            "The search repository returned an unsupported source type."
-        )
-    return value  # type: ignore[return-value]
+def _validate_source_type(value: object) -> SourceType:
+    if isinstance(value, str):
+        if value == "PDF":
+            return "PDF"
+        if value == "DOCX":
+            return "DOCX"
+    raise SearchPipelineError(
+        "The search repository returned an unsupported source type."
+    )
 
 
-def _validate_source_file(value: object, source_type: str) -> str:
+def _validate_source_file(value: object, source_type: SourceType) -> str:
     if (
         not isinstance(value, str)
         or not value.strip()
@@ -224,7 +226,7 @@ def _validate_chunk_index(value: object) -> int:
     return value
 
 
-def _validate_page_number(value: object, source_type: str) -> int | None:
+def _validate_page_number(value: object, source_type: SourceType) -> int | None:
     if source_type == "PDF":
         if not isinstance(value, int) or isinstance(value, bool) or value < 1:
             raise SearchPipelineError(

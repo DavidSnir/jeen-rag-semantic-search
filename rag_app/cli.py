@@ -2,7 +2,7 @@
 
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Annotated, TypeVar
+from typing import Annotated
 
 import typer
 
@@ -11,7 +11,8 @@ from rag_app.database.repository import (
     check_database_readiness,
     initialize_schema,
 )
-from rag_app.documents import ChunkingStrategy, IndexingStatus, SearchResponse
+from rag_app.documents import ChunkingStrategy as ChunkingStrategy
+from rag_app.documents import IndexingStatus, SearchResponse
 from rag_app.exceptions import InvalidChunkingStrategyError, RagAppError
 from rag_app.processing.chunking import validate_chunking_strategy
 from rag_app.services.indexing import index_document, reset_index
@@ -22,8 +23,6 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
-
-Result = TypeVar("Result")
 
 
 @app.command("database-init")
@@ -125,8 +124,7 @@ def search(
 def _display_search_response(response: SearchResponse) -> None:
     if not response.matches:
         typer.echo(
-            "No indexed results found for "
-            f"strategy={response.chunking_strategy.value}."
+            f"No indexed results found for strategy={response.chunking_strategy.value}."
         )
         return
 
@@ -156,7 +154,7 @@ def reset(
     _run(reset_index)
 
 
-def _run(operation: Callable[..., Result], *args: object) -> Result:
+def _run[Result](operation: Callable[..., Result], *args: object) -> Result:
     """Present expected application failures without a stack trace."""
     try:
         return operation(*args)

@@ -89,7 +89,9 @@ def _invoke(
         calls.append("hash")
         return hash_value  # type: ignore[return-value]
 
-    def read_state(source_file: str, strategy: ChunkingStrategy) -> IndexedDocumentState:
+    def read_state(
+        source_file: str, strategy: ChunkingStrategy
+    ) -> IndexedDocumentState:
         calls.append("preflight")
         if state_error:
             raise state_error
@@ -180,9 +182,7 @@ def test_exact_duplicate_skips_every_expensive_or_write_stage() -> None:
 
 def test_conflicting_hash_runs_complete_replacement_pipeline() -> None:
     state = IndexedDocumentState((IndexedDocumentVersion("b" * 64, 2),))
-    result, calls = _invoke(
-        state=state, persistence_status=IndexingStatus.replaced
-    )
+    result, calls = _invoke(state=state, persistence_status=IndexingStatus.replaced)
 
     assert result.status is IndexingStatus.replaced
     assert calls[-4:] == ["extract", "chunk", "embed", "persist"]
@@ -207,7 +207,11 @@ def test_transaction_time_duplicate_is_returned_as_skip() -> None:
 @pytest.mark.parametrize(
     ("keyword", "error", "forbidden_calls"),
     [
-        ("extractor_error", DocumentExtractionError("failed"), {"chunk", "embed", "persist"}),
+        (
+            "extractor_error",
+            DocumentExtractionError("failed"),
+            {"chunk", "embed", "persist"},
+        ),
         ("chunker_error", ChunkGenerationError("failed"), {"embed", "persist"}),
         ("embedder_error", GeminiRequestError("failed"), {"persist"}),
         ("persister_error", PersistenceError("failed"), set()),

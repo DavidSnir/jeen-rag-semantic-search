@@ -220,3 +220,13 @@ later stages add resolved implementation details without removing them.
 161. Roll back failed writes and reads deterministically, close connections, and re-raise programming errors unchanged after cleanup rather than misclassifying them as persistence failures.
 162. Keep application logging opt-in with a package `NullHandler`; do not add a debug CLI mode or new logging framework for Stage 7.
 163. Normalize strategy strings through the shared application validator, state supported values without reflecting rejected input, and reject unsafe control characters in source filenames.
+
+## Stage 8 Testing and Code Quality
+
+164. Preserve one sentence or paragraph per normal semantic chunk in public-behavior tests and use fixed-size overlap only for fixed chunking and oversized individual-sentence fallback.
+165. Block real Gemini client construction across automated tests, use shared deterministic fakes, and require no Gemini credential for unit or PostgreSQL integration tests.
+166. Run PostgreSQL integration tests only against an explicitly test-named database, truncate rows around every test, and verify replacement rollback after a partial write.
+167. Use Ruff 0.16.1 for Python 3.12 linting and formatting across application code, root scripts, tests, and fixture generators.
+168. Keep Docker Compose resources project-scoped rather than assigning checkout-global container or volume names.
+169. Scan the clean current tree and all reachable regular and merge-commit diffs with checksum-pinned Gitleaks 8.30.1, redact output, and allow only exact fingerprints for confirmed synthetic historical values.
+170. Preserve the 80% line-coverage gate and run dependency validation, lint, formatting, CLI smoke tests, fixture validation, database checks, unit tests, integration tests, coverage, and secret scanning before unconditional Compose cleanup.

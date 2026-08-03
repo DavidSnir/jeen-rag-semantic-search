@@ -30,8 +30,8 @@ from rag_app.processing.hashing import calculate_document_hash
 
 
 def index_document(
-    file: Path,
-    strategy: str,
+    file: str | Path | None,
+    strategy: str | ChunkingStrategy,
     *,
     path_validator: Callable[[str | Path | None], tuple[Path, SourceType]] = (
         validate_document_path
@@ -54,7 +54,7 @@ def index_document(
     ] = persist_embedded_document,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> IndexingResult:
-    """Run every indexing stage and return one immutable safe result."""
+    """Run validated indexing stages and return one immutable safe result."""
     started_at = monotonic()
     source_path, source_type = path_validator(file)
     canonical_strategy = strategy_validator(strategy)
@@ -62,9 +62,10 @@ def index_document(
 
     readiness_checker()
     document_hash = hashing_function(source_path)
-    if not isinstance(document_hash, str) or re.fullmatch(
-        r"[0-9a-f]{64}", document_hash
-    ) is None:
+    if (
+        not isinstance(document_hash, str)
+        or re.fullmatch(r"[0-9a-f]{64}", document_hash) is None
+    ):
         raise IndexingPipelineError(
             "The hashing stage returned an invalid document hash."
         )
@@ -145,8 +146,10 @@ def _validate_stage_metadata(
         not isinstance(document, expected_type)
         or getattr(document, "source_file", None) != source_file
         or getattr(document, "source_type", None) != source_type
-        or strategy is not None
-        and getattr(document, "chunking_strategy", None) is not strategy
+        or (
+            strategy is not None
+            and getattr(document, "chunking_strategy", None) is not strategy
+        )
     ):
         raise IndexingPipelineError(
             f"The {stage} stage returned inconsistent document metadata."

@@ -1,23 +1,13 @@
 """Integration verification for PostgreSQL 17 and pgvector infrastructure."""
 
-import os
-
 import psycopg
 import pytest
-from dotenv import load_dotenv
 from pgvector import Vector
 
 from rag_app.database.connection import open_database_connection
 from rag_app.database.repository import (
     check_database_readiness,
     initialize_schema,
-)
-
-load_dotenv()
-
-pytestmark = pytest.mark.skipif(
-    not os.getenv("POSTGRES_URL"),
-    reason="POSTGRES_URL is required for PostgreSQL integration tests",
 )
 
 EXPECTED_COLUMNS = {
@@ -46,6 +36,13 @@ EXPECTED_CONSTRAINTS = {
 }
 
 
+def test_real_database_connection_is_closed_after_context_exit() -> None:
+    with open_database_connection() as connection:
+        assert connection.closed is False
+
+    assert connection.closed is True
+
+
 def test_schema_initialization_is_idempotent_and_ready() -> None:
     first_status = initialize_schema()
     second_status = initialize_schema()
@@ -58,8 +55,6 @@ def test_schema_initialization_is_idempotent_and_ready() -> None:
 
 
 def test_extension_table_and_complete_column_structure() -> None:
-    initialize_schema()
-
     with open_database_connection() as connection:
         extension = connection.execute(
             "SELECT extversion FROM pg_catalog.pg_extension WHERE extname = 'vector'"
@@ -111,8 +106,6 @@ def test_extension_table_and_complete_column_structure() -> None:
 
 
 def test_required_constraints_and_indexes_exist() -> None:
-    initialize_schema()
-
     with open_database_connection() as connection:
         constraint_rows = connection.execute(
             """
@@ -160,9 +153,7 @@ def test_required_constraints_and_indexes_exist() -> None:
     for name, constraint_type in EXPECTED_CONSTRAINTS.items():
         assert constraints[name][0] == constraint_type
         assert constraints[name][1] is True
-    unique_definition = constraints[
-        "chunks_document_version_strategy_chunk_key"
-    ][2]
+    unique_definition = constraints["chunks_document_version_strategy_chunk_key"][2]
     assert "source_file, document_hash, chunking_strategy, chunk_index" in (
         unique_definition
     )
@@ -205,7 +196,6 @@ def test_required_constraints_and_indexes_exist() -> None:
 
 
 def test_vector_dimension_enforcement_and_rollback() -> None:
-    initialize_schema()
     source_file = "stage-1-integration-test.pdf"
 
     with open_database_connection() as connection:

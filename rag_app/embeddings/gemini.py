@@ -21,6 +21,7 @@ from rag_app.documents import (
     EmbeddedChunk,
     EmbeddedDocument,
     EmbeddingVector,
+    SourceType,
 )
 from rag_app.embeddings.vectors import validate_and_normalize_embedding
 from rag_app.exceptions import (
@@ -50,13 +51,17 @@ class _GeminiClient(Protocol):
     models: _EmbeddingModels
 
 
+class _OwnedGeminiClient(_GeminiClient, Protocol):
+    def close(self) -> None: ...
+
+
 def embed_document(
     document: ChunkedDocument,
     settings: EmbeddingSettings | None = None,
     *,
     client: _GeminiClient | None = None,
 ) -> EmbeddedDocument:
-    """Embed every ordered chunk in one request and return no partial result."""
+    """Embed all chunks atomically, closing only an internally created client."""
     title = _validate_document(document)
     validated_settings = validate_embedding_settings(
         settings if settings is not None else load_embedding_settings()
@@ -84,16 +89,14 @@ def embed_query(
     *,
     client: _GeminiClient | None = None,
 ) -> EmbeddingVector:
-    """Embed one canonical search query using retrieval-query semantics."""
+    """Embed one query, closing only an internally created client."""
     canonical_query = _validate_query(query)
     validated_settings = validate_embedding_settings(
         settings if settings is not None else load_embedding_settings()
     )
 
     if client is not None:
-        return _request_query_embedding(
-            client, canonical_query, validated_settings
-        )
+        return _request_query_embedding(client, canonical_query, validated_settings)
 
     owned_client = _create_client(validated_settings)
     try:
@@ -104,7 +107,7 @@ def embed_query(
         _close_client(owned_client, validated_settings)
 
 
-def _create_client(settings: EmbeddingSettings) -> _GeminiClient:
+def _create_client(settings: EmbeddingSettings) -> _OwnedGeminiClient:
     try:
         return genai.Client(api_key=settings.gemini_api_key, vertexai=False)
     except (errors.APIError, ValueError, httpx.TransportError) as error:
@@ -113,10 +116,9 @@ def _create_client(settings: EmbeddingSettings) -> _GeminiClient:
         ) from error
 
 
-def _close_client(client: _GeminiClient, settings: EmbeddingSettings) -> None:
+def _close_client(client: _OwnedGeminiClient, settings: EmbeddingSettings) -> None:
     try:
-        close = getattr(client, "close")
-        close()
+        client.close()
     except (errors.APIError, ValueError, httpx.TransportError):
         logger.warning(
             "Gemini embedding client cleanup failed model=%s",
@@ -135,9 +137,7 @@ def _validate_query(query: object) -> str:
 
 def _validate_document(document: ChunkedDocument) -> str:
     if not isinstance(document, ChunkedDocument):
-        raise InvalidEmbeddingInputError(
-            "Embedding input must be a ChunkedDocument"
-        )
+        raise InvalidEmbeddingInputError("Embedding input must be a ChunkedDocument")
     if document.source_type not in {"PDF", "DOCX"}:
         raise InvalidEmbeddingInputError(
             "Embedding input has an unsupported source type"
@@ -146,10 +146,7 @@ def _validate_document(document: ChunkedDocument) -> str:
         raise InvalidEmbeddingInputError(
             "Embedding input has an unsupported chunking strategy"
         )
-    if (
-        not isinstance(document.source_file, str)
-        or not document.source_file.strip()
-    ):
+    if not isinstance(document.source_file, str) or not document.source_file.strip():
         raise InvalidEmbeddingInputError("Embedding input must have a source filename")
     title = PureWindowsPath(document.source_file).name
     if not title:
@@ -168,7 +165,7 @@ def _validate_document(document: ChunkedDocument) -> str:
     return title
 
 
-def _validate_chunk(chunk: Chunk, expected_index: int, source_type: str) -> None:
+def _validate_chunk(chunk: Chunk, expected_index: int, source_type: SourceType) -> None:
     if not isinstance(chunk, Chunk):
         raise InvalidEmbeddingInputError(
             f"Embedding input contains an invalid chunk at index {expected_index}"
@@ -355,9 +352,7 @@ def _response_embeddings(response: object, expected_count: int) -> Sequence[obje
         raise InvalidGeminiResponseError("Gemini returned no embedding response")
     embeddings = getattr(response, "embeddings", _MISSING)
     if embeddings is _MISSING:
-        raise InvalidGeminiResponseError(
-            "Gemini response does not contain embeddings"
-        )
+        raise InvalidGeminiResponseError("Gemini response does not contain embeddings")
     if embeddings is None:
         raise InvalidGeminiResponseError("Gemini returned null embeddings")
     if isinstance(embeddings, (str, bytes)) or not isinstance(embeddings, Sequence):

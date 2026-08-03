@@ -2,15 +2,13 @@
 
 import hashlib
 import math
-import os
 from pathlib import Path
-from uuid import uuid4
+from typing import Protocol
 
 import pytest
-from dotenv import load_dotenv
 
 from rag_app.database.connection import open_database_connection
-from rag_app.database.repository import initialize_schema, persist_embedded_document
+from rag_app.database.repository import persist_embedded_document
 from rag_app.database.search import search_similar_chunks
 from rag_app.documents import (
     Chunk,
@@ -20,14 +18,11 @@ from rag_app.documents import (
 )
 from rag_app.services.search import search_documents
 
-load_dotenv()
-
-pytestmark = pytest.mark.skipif(
-    not os.getenv("POSTGRES_URL"),
-    reason="POSTGRES_URL is required for PostgreSQL integration tests",
-)
-
 _VECTOR_DIMENSION = 768
+
+
+class _SourceFileFactory(Protocol):
+    def __call__(self, label: str, suffix: str = ".pdf") -> str: ...
 
 
 def _normalized_vector(*coordinates: tuple[int, float]) -> tuple[float, ...]:
@@ -42,31 +37,6 @@ _QUERY_VECTOR = _normalized_vector((0, 1.0))
 _RELEVANT_VECTOR = _normalized_vector((0, 0.8), (1, 0.6))
 _ORTHOGONAL_VECTOR = _normalized_vector((1, 1.0))
 _OPPOSING_VECTOR = _normalized_vector((0, -1.0))
-
-
-@pytest.fixture(scope="module", autouse=True)
-def _initialized_schema() -> None:
-    initialize_schema()
-
-
-@pytest.fixture
-def unique_source_file():
-    source_files: set[str] = set()
-
-    def create(label: str, suffix: str = ".pdf") -> str:
-        source_file = f"stage-6-{label}-{uuid4().hex}{suffix}"
-        source_files.add(source_file)
-        return source_file
-
-    yield create
-
-    if source_files:
-        with open_database_connection() as connection:
-            connection.execute(
-                "DELETE FROM public.chunks WHERE source_file = ANY(%s)",
-                (list(source_files),),
-            )
-            connection.commit()
 
 
 def _persist_chunk(
@@ -114,17 +84,10 @@ def _total_row_count() -> int:
     return count
 
 
-def _require_empty_strategy() -> ChunkingStrategy:
-    for strategy in ChunkingStrategy:
-        if _strategy_row_count(strategy) == 0:
-            return strategy
-    pytest.skip("exact ranking assertions require one strategy without existing rows")
-
-
 def test_service_ranks_cosine_results_preserves_metadata_and_does_not_write(
-    unique_source_file,
+    unique_source_file: _SourceFileFactory,
 ) -> None:
-    strategy = _require_empty_strategy()
+    strategy = ChunkingStrategy.sentence
     aligned_pdf = unique_source_file("aligned", ".pdf")
     relevant_docx = unique_source_file("relevant", ".docx")
     orthogonal_pdf = unique_source_file("orthogonal", ".pdf")
@@ -227,7 +190,9 @@ def test_service_ranks_cosine_results_preserves_metadata_and_does_not_write(
     assert _total_row_count() == row_count_before_search
 
 
-def test_repository_filters_every_canonical_strategy(unique_source_file) -> None:
+def test_repository_filters_every_canonical_strategy(
+    unique_source_file: _SourceFileFactory,
+) -> None:
     seeded_files: dict[ChunkingStrategy, str] = {}
     for strategy in ChunkingStrategy:
         source_file = unique_source_file(f"filter-{strategy.value}")
@@ -258,7 +223,7 @@ def test_repository_filters_every_canonical_strategy(unique_source_file) -> None
 
 
 def test_service_returns_empty_matches_for_strategy_without_chunks() -> None:
-    strategy = _require_empty_strategy()
+    strategy = ChunkingStrategy.paragraph
 
     response = search_documents(
         "query with no indexed strategy",

@@ -1,7 +1,7 @@
 """Tests for shared document path validation and dispatch metadata."""
 
-from pathlib import Path
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -37,7 +37,7 @@ def test_validate_document_path_rejects_unsupplied_path(
 def test_validate_document_path_rejects_missing_file(tmp_path: Path) -> None:
     path = tmp_path / "missing.pdf"
 
-    with pytest.raises(InvalidDocumentPathError, match="not found: missing.pdf"):
+    with pytest.raises(InvalidDocumentPathError, match=r"not found: missing\.pdf"):
         validate_document_path(path)
 
 
@@ -119,3 +119,17 @@ def test_dispatch_accepts_case_insensitive_extensions(
     assert document.source_file == filename
     assert document.source_type == source_type
     assert str(tmp_path) not in repr(document)
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    ["pdf/multi-page.pdf", "docx/ordered-content.docx"],
+)
+def test_extract_document_is_deterministic(relative_path: str) -> None:
+    path = FIXTURES / relative_path
+
+    first = extract_document(path)
+    second = extract_document(path)
+
+    assert first == second
+    assert first is not second

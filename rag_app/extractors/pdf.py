@@ -1,8 +1,8 @@
 """Page-aware PDF text extraction using pypdf."""
 
+import re
 from collections import Counter
 from pathlib import Path
-import re
 
 from pypdf import PdfReader
 from pypdf.errors import PyPdfError
@@ -66,9 +66,7 @@ def _remove_repeated_margins(page_texts: list[str]) -> list[str]:
             {
                 template
                 for index in footer_indices
-                if (template := _page_number_footer_template(
-                    lines[index], page_number
-                ))
+                if (template := _page_number_footer_template(lines[index], page_number))
                 is not None
             }
         )
@@ -129,5 +127,5 @@ def _page_number_footer_template(line: str, page_number: int) -> str | None:
     key = _comparison_key(line)
     for match in _NUMBER.finditer(key):
         if int(match.group()) == page_number:
-            return f"{key[:match.start()]}<page-number>{key[match.end():]}"
+            return f"{key[: match.start()]}<page-number>{key[match.end() :]}"
     return None

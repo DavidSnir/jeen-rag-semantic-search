@@ -12,7 +12,7 @@ from rag_app.config import (
 )
 from rag_app.exceptions import EmbeddingConfigurationError
 
-SYNTHETIC_KEY = "stage4-recognizable-synthetic-key"
+SYNTHETIC_KEY = "unit-test-placeholder"
 
 
 @pytest.fixture(autouse=True)

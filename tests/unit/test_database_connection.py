@@ -75,9 +75,8 @@ def test_psycopg_connection_failure_is_converted_and_chained(
         MagicMock(side_effect=original),
     )
 
-    with pytest.raises(DatabaseConnectionError) as raised:
-        with open_database_connection():
-            pass
+    with pytest.raises(DatabaseConnectionError) as raised, open_database_connection():
+        pass
 
     assert raised.value.__cause__ is original
     assert "PostgreSQL is unavailable" in str(raised.value)
@@ -131,9 +130,8 @@ def test_connection_closes_when_vector_registration_fails(
         MagicMock(side_effect=original),
     )
 
-    with pytest.raises(DatabaseOperationError) as raised:
-        with open_database_connection():
-            pass
+    with pytest.raises(DatabaseOperationError) as raised, open_database_connection():
+        pass
 
     assert raised.value.__cause__ is original
     assert "secret-password" not in str(raised.value)
@@ -156,9 +154,11 @@ def test_connection_closes_after_caller_failure(
         MagicMock(return_value=connection),
     )
 
-    with pytest.raises(RuntimeError, match="caller failed"):
-        with open_database_connection(register_vector_types_on_open=False):
-            raise RuntimeError("caller failed")
+    with (
+        pytest.raises(RuntimeError, match="caller failed"),
+        open_database_connection(register_vector_types_on_open=False),
+    ):
+        raise RuntimeError("caller failed")
 
     connection.close.assert_called_once_with()
 
@@ -180,9 +180,11 @@ def test_close_failure_without_primary_error_is_safe_and_chained(
         MagicMock(return_value=connection),
     )
 
-    with pytest.raises(DatabaseOperationError) as raised:
-        with open_database_connection(register_vector_types_on_open=False):
-            pass
+    with (
+        pytest.raises(DatabaseOperationError) as raised,
+        open_database_connection(register_vector_types_on_open=False),
+    ):
+        pass
 
     assert raised.value.__cause__ is original
     assert str(raised.value) == "Database connection cleanup failed."
@@ -207,11 +209,12 @@ def test_close_failure_does_not_mask_primary_error(
         MagicMock(return_value=connection),
     )
 
-    with caplog.at_level(logging.WARNING), pytest.raises(
-        RuntimeError, match="primary failure"
+    with (
+        caplog.at_level(logging.WARNING),
+        pytest.raises(RuntimeError, match="primary failure"),
+        open_database_connection(register_vector_types_on_open=False),
     ):
-        with open_database_connection(register_vector_types_on_open=False):
-            raise RuntimeError("primary failure")
+        raise RuntimeError("primary failure")
 
     assert "category=close" in caplog.text
     assert "stage7-password" not in caplog.text
@@ -237,9 +240,11 @@ def test_outer_exception_context_does_not_hide_close_failure(
     try:
         raise RuntimeError("outer handled error")
     except RuntimeError:
-        with pytest.raises(DatabaseOperationError) as raised:
-            with open_database_connection(register_vector_types_on_open=False):
-                pass
+        with (
+            pytest.raises(DatabaseOperationError) as raised,
+            open_database_connection(register_vector_types_on_open=False),
+        ):
+            pass
 
     assert raised.value.__cause__ is original
     assert "stage7-password" not in str(raised.value)
@@ -253,9 +258,11 @@ def test_intentional_local_connection_failure_is_prompt_and_safe(
     monkeypatch.setenv("POSTGRES_URL", database_url)
 
     started_at = time.monotonic()
-    with pytest.raises(DatabaseConnectionError) as raised:
-        with open_database_connection(register_vector_types_on_open=False):
-            pass
+    with (
+        pytest.raises(DatabaseConnectionError) as raised,
+        open_database_connection(register_vector_types_on_open=False),
+    ):
+        pass
     elapsed = time.monotonic() - started_at
 
     assert elapsed < 7

@@ -2,8 +2,7 @@
 
 import logging
 from collections.abc import Iterator
-from contextlib import contextmanager
-from typing import Any
+from contextlib import contextmanager, suppress
 
 import psycopg
 from pgvector.psycopg import register_vector
@@ -18,11 +17,12 @@ logger = logging.getLogger(__name__)
 @contextmanager
 def open_database_connection(
     *, register_vector_types_on_open: bool = True
-) -> Iterator[Connection[Any]]:
-    """Open and deterministically close one non-autocommit connection.
+) -> Iterator[Connection[tuple[object, ...]]]:
+    """Yield one non-autocommit connection and always attempt to close it.
 
-    Callers retain responsibility for committing their own transactions. Closing
-    the context rolls back any transaction the caller leaves uncommitted.
+    Requested adapter setup is committed before the connection is yielded. The
+    caller owns later commits and rollbacks; closing discards uncommitted work.
+    A close failure is raised only when it would not mask an active exception.
     """
     settings = load_database_settings()
     try:
@@ -63,7 +63,7 @@ def open_database_connection(
             logger.warning("Database connection cleanup failed category=close")
 
 
-def register_vector_types(connection: Connection[Any]) -> None:
+def register_vector_types(connection: Connection[tuple[object, ...]]) -> None:
     """Register pgvector adapters on a connection after extension creation."""
     try:
         register_vector(connection)
@@ -73,8 +73,6 @@ def register_vector_types(connection: Connection[Any]) -> None:
         ) from error
 
 
-def _rollback_quietly(connection: Connection[Any]) -> None:
-    try:
+def _rollback_quietly(connection: Connection[tuple[object, ...]]) -> None:
+    with suppress(psycopg.Error):
         connection.rollback()
-    except psycopg.Error:
-        pass

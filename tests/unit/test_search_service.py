@@ -290,9 +290,7 @@ def test_distance_tolerance_is_not_clamped_and_score_is_exact() -> None:
         "fixed",
         readiness_checker=lambda: None,
         query_embedder=lambda query: VECTOR,
-        repository_search=lambda vector, strategy, top_k: (
-            _row(distance=distance),
-        ),
+        repository_search=lambda vector, strategy, top_k: (_row(distance=distance),),
     )
 
     assert response.matches[0].distance == distance

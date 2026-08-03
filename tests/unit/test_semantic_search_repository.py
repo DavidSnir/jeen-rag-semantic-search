@@ -1,7 +1,7 @@
 """Unit tests for the read-only semantic-search repository."""
 
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
 
 import psycopg
 import pytest
@@ -140,9 +140,9 @@ def test_query_has_static_parameterized_cosine_search_contract(
     assert setup_params is None
     sql, params = cursor.calls[1]
     normalized_sql = " ".join(sql.split())
-    projection = normalized_sql.removeprefix("SELECT ").split(
-        " FROM public.chunks", 1
-    )[0]
+    projection = normalized_sql.removeprefix("SELECT ").split(" FROM public.chunks", 1)[
+        0
+    ]
     expressions = projection.split(", ")
 
     assert expressions == [
