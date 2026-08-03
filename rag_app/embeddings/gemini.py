@@ -1,1 +1,317 @@
-"""Gemini embedding boundary; implementation is deferred beyond Stage 0."""
+"""Synchronous Gemini document-embedding boundary."""
+
+import logging
+from collections.abc import Sequence
+from pathlib import PureWindowsPath
+from typing import Protocol
+
+import httpx
+from google import genai
+from google.genai import errors, types
+
+from rag_app.config import (
+    EmbeddingSettings,
+    load_embedding_settings,
+    validate_embedding_settings,
+)
+from rag_app.documents import (
+    Chunk,
+    ChunkedDocument,
+    ChunkingStrategy,
+    EmbeddedChunk,
+    EmbeddedDocument,
+)
+from rag_app.embeddings.vectors import validate_and_normalize_embedding
+from rag_app.exceptions import (
+    EmbeddingConfigurationError,
+    EmbeddingDimensionError,
+    EmbeddingNormalizationError,
+    GeminiRequestError,
+    InvalidEmbeddingInputError,
+    InvalidGeminiResponseError,
+)
+from rag_app.processing.chunking import MAX_CHUNK_SIZE
+
+logger = logging.getLogger(__name__)
+
+_RETRIEVAL_DOCUMENT_TASK = "RETRIEVAL_DOCUMENT"
+_MISSING = object()
+
+
+class _EmbeddingModels(Protocol):
+    def embed_content(
+        self, *, model: str, contents: list[str], config: types.EmbedContentConfig
+    ) -> object: ...
+
+
+class _GeminiClient(Protocol):
+    models: _EmbeddingModels
+
+
+def embed_document(
+    document: ChunkedDocument,
+    settings: EmbeddingSettings | None = None,
+    *,
+    client: _GeminiClient | None = None,
+) -> EmbeddedDocument:
+    """Embed every ordered chunk in one request and return no partial result."""
+    title = _validate_document(document)
+    validated_settings = validate_embedding_settings(
+        settings if settings is not None else load_embedding_settings()
+    )
+    contents = [chunk.content for chunk in document.chunks]
+
+    if client is not None:
+        return _request_embeddings(
+            client, document, validated_settings, contents, title
+        )
+
+    try:
+        owned_client = genai.Client(
+            api_key=validated_settings.gemini_api_key,
+            vertexai=False,
+        )
+    except Exception as error:
+        raise EmbeddingConfigurationError(
+            "The Gemini embedding client could not be configured"
+        ) from error
+
+    try:
+        return _request_embeddings(
+            owned_client, document, validated_settings, contents, title
+        )
+    finally:
+        try:
+            owned_client.close()
+        except Exception:
+            logger.warning(
+                "Gemini embedding client cleanup failed model=%s",
+                validated_settings.embedding_model,
+            )
+
+
+def _validate_document(document: ChunkedDocument) -> str:
+    if not isinstance(document, ChunkedDocument):
+        raise InvalidEmbeddingInputError(
+            "Embedding input must be a ChunkedDocument"
+        )
+    if document.source_type not in {"PDF", "DOCX"}:
+        raise InvalidEmbeddingInputError(
+            "Embedding input has an unsupported source type"
+        )
+    if not isinstance(document.chunking_strategy, ChunkingStrategy):
+        raise InvalidEmbeddingInputError(
+            "Embedding input has an unsupported chunking strategy"
+        )
+    if (
+        not isinstance(document.source_file, str)
+        or not document.source_file.strip()
+    ):
+        raise InvalidEmbeddingInputError("Embedding input must have a source filename")
+    title = PureWindowsPath(document.source_file).name
+    if not title:
+        raise InvalidEmbeddingInputError("Embedding input must have a source filename")
+    if not isinstance(document.chunks, tuple):
+        raise InvalidEmbeddingInputError(
+            "Chunked document chunks must be an ordered immutable tuple"
+        )
+    if not document.chunks:
+        raise InvalidEmbeddingInputError(
+            "Chunked document must contain at least one chunk"
+        )
+
+    for expected_index, chunk in enumerate(document.chunks):
+        _validate_chunk(chunk, expected_index, document.source_type)
+    return title
+
+
+def _validate_chunk(chunk: Chunk, expected_index: int, source_type: str) -> None:
+    if not isinstance(chunk, Chunk):
+        raise InvalidEmbeddingInputError(
+            f"Embedding input contains an invalid chunk at index {expected_index}"
+        )
+    if (
+        not isinstance(chunk.chunk_index, int)
+        or isinstance(chunk.chunk_index, bool)
+        or chunk.chunk_index != expected_index
+    ):
+        raise InvalidEmbeddingInputError(
+            "Chunk indexes must be zero-based, continuous, and in order"
+        )
+    if not isinstance(chunk.content, str) or not chunk.content.strip():
+        raise InvalidEmbeddingInputError(
+            f"Chunk {expected_index} must contain meaningful text"
+        )
+    if len(chunk.content) > MAX_CHUNK_SIZE:
+        raise InvalidEmbeddingInputError(
+            f"Chunk {expected_index} exceeds the {MAX_CHUNK_SIZE}-character limit"
+        )
+
+    if source_type == "PDF":
+        if (
+            not isinstance(chunk.page_number, int)
+            or isinstance(chunk.page_number, bool)
+            or chunk.page_number < 1
+        ):
+            raise InvalidEmbeddingInputError(
+                f"PDF chunk {expected_index} must have a positive page number"
+            )
+    elif chunk.page_number is not None:
+        raise InvalidEmbeddingInputError(
+            f"DOCX chunk {expected_index} must not have a page number"
+        )
+
+
+def _request_embeddings(
+    client: _GeminiClient,
+    document: ChunkedDocument,
+    settings: EmbeddingSettings,
+    contents: list[str],
+    title: str,
+) -> EmbeddedDocument:
+    logger.info(
+        "Requesting Gemini document embeddings model=%s dimension=%d chunks=%d "
+        "source_file=%s strategy=%s",
+        settings.embedding_model,
+        settings.embedding_dimension,
+        len(contents),
+        title,
+        document.chunking_strategy.value,
+    )
+    request_config = types.EmbedContentConfig(
+        task_type=_RETRIEVAL_DOCUMENT_TASK,
+        title=title,
+        output_dimensionality=settings.embedding_dimension,
+    )
+
+    try:
+        response = client.models.embed_content(
+            model=settings.embedding_model,
+            contents=contents,
+            config=request_config,
+        )
+    except errors.APIError as error:
+        category = _api_error_category(error.code)
+        logger.warning(
+            "Gemini embedding request failed category=%s status_code=%s "
+            "model=%s chunks=%d",
+            category,
+            error.code,
+            settings.embedding_model,
+            len(contents),
+        )
+        raise GeminiRequestError(_api_error_message(error.code)) from error
+    except (ValueError, httpx.TransportError) as error:
+        logger.warning(
+            "Gemini embedding request failed category=transport-or-protocol "
+            "model=%s chunks=%d",
+            settings.embedding_model,
+            len(contents),
+        )
+        raise GeminiRequestError("Gemini embedding generation failed") from error
+
+    try:
+        embeddings = _response_embeddings(response, len(contents))
+        normalized_vectors = tuple(
+            validate_and_normalize_embedding(
+                getattr(embedding, "values", _MISSING),
+                chunk_index=chunk_index,
+                expected_dimension=settings.embedding_dimension,
+            )
+            for chunk_index, embedding in enumerate(embeddings)
+        )
+    except EmbeddingDimensionError:
+        _log_validation_failure(settings, len(contents), "dimension-mismatch")
+        raise
+    except EmbeddingNormalizationError:
+        _log_validation_failure(settings, len(contents), "normalization")
+        raise
+    except InvalidGeminiResponseError:
+        _log_validation_failure(settings, len(contents), "invalid-response")
+        raise
+    embedded_chunks = tuple(
+        EmbeddedChunk(chunk=document.chunks[index], embedding=vector)
+        for index, vector in enumerate(normalized_vectors)
+    )
+
+    logger.info(
+        "Gemini document embeddings validated model=%s vectors=%d dimension=%d",
+        settings.embedding_model,
+        len(embedded_chunks),
+        settings.embedding_dimension,
+    )
+    return EmbeddedDocument(
+        source_file=document.source_file,
+        source_type=document.source_type,
+        chunking_strategy=document.chunking_strategy,
+        chunks=embedded_chunks,
+    )
+
+
+def _response_embeddings(response: object, expected_count: int) -> Sequence[object]:
+    if response is None:
+        raise InvalidGeminiResponseError("Gemini returned no embedding response")
+    embeddings = getattr(response, "embeddings", _MISSING)
+    if embeddings is _MISSING:
+        raise InvalidGeminiResponseError(
+            "Gemini response does not contain embeddings"
+        )
+    if embeddings is None:
+        raise InvalidGeminiResponseError("Gemini returned null embeddings")
+    if isinstance(embeddings, (str, bytes)) or not isinstance(embeddings, Sequence):
+        raise InvalidGeminiResponseError(
+            "Gemini returned an invalid embeddings collection"
+        )
+    if not embeddings:
+        raise InvalidGeminiResponseError("Gemini returned no embeddings")
+    if len(embeddings) != expected_count:
+        raise InvalidGeminiResponseError(
+            f"Gemini returned {len(embeddings)} embeddings; expected {expected_count}"
+        )
+    return embeddings
+
+
+def _log_validation_failure(
+    settings: EmbeddingSettings, chunk_count: int, category: str
+) -> None:
+    logger.warning(
+        "Gemini embedding validation failed category=%s model=%s chunks=%d",
+        category,
+        settings.embedding_model,
+        chunk_count,
+    )
+
+
+def _api_error_category(status_code: int) -> str:
+    if status_code == 401:
+        return "authentication"
+    if status_code == 403:
+        return "access-denied"
+    if status_code == 404:
+        return "model-not-found"
+    if status_code == 429:
+        return "quota-or-rate-limit"
+    if 400 <= status_code < 500:
+        return "rejected-request"
+    if 500 <= status_code < 600:
+        return "temporarily-unavailable"
+    return "provider-failure"
+
+
+def _api_error_message(status_code: int) -> str:
+    messages = {
+        401: "Gemini authentication failed",
+        403: "Gemini access was denied",
+        404: "The configured embedding model was not found",
+        429: "Gemini quota or rate limit was exceeded",
+    }
+    if status_code in messages:
+        return messages[status_code]
+    if 400 <= status_code < 500:
+        return "Gemini rejected the embedding request"
+    if 500 <= status_code < 600:
+        return "Gemini is temporarily unavailable"
+    return "Gemini embedding generation failed"
+
+
+__all__ = ["embed_document"]
