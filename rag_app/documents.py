@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Literal
 
 SourceType = Literal["PDF", "DOCX"]
+EmbeddingVector = tuple[float, ...]
 
 
 class ChunkingStrategy(str, Enum):
@@ -50,3 +51,21 @@ class ChunkedDocument:
     source_type: SourceType
     chunking_strategy: ChunkingStrategy
     chunks: tuple[Chunk, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddedChunk:
+    """One original chunk paired with its normalized embedding vector."""
+
+    chunk: Chunk
+    embedding: EmbeddingVector
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddedDocument:
+    """Immutable document result ready for a later persistence stage."""
+
+    source_file: str
+    source_type: SourceType
+    chunking_strategy: ChunkingStrategy
+    chunks: tuple[EmbeddedChunk, ...]

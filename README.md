@@ -5,12 +5,12 @@ content with Gemini embeddings and PostgreSQL/pgvector semantic search.
 
 ## Status
 
-Stage 3 adds fixed-size, sentence-based, and paragraph-based chunking over the
-parser-independent Stage 2 extraction model. Chunk results preserve source
-metadata, stable document-level indexes, and physical PDF page numbers. Stage
-1's reproducible PostgreSQL 17 and pgvector 0.8.2 environment and Stage 2's PDF
-and DOCX extraction remain available. Gemini embeddings, chunk persistence,
-complete indexing, and semantic search are not implemented yet.
+Stage 4 adds validated Gemini document embeddings over the ordered Stage 3
+chunk model. One synchronous multi-content request produces a positional
+768-dimensional vector for every chunk, and every accepted vector is manually
+L2-normalized. Stage 1's PostgreSQL/pgvector environment, Stage 2 extraction,
+and Stage 3 chunking remain available. Chunk persistence, duplicate-document
+handling, complete indexing, and semantic search are not implemented yet.
 
 ## Runtime
 
@@ -63,8 +63,11 @@ requires changing the password component of `POSTGRES_URL`. URL-encode any
 URI-special characters used in that component. Replace the example password
 before starting PostgreSQL. Never commit `.env` or real credentials.
 
-`GEMINI_API_KEY` may remain empty for Stage 1 database operations and Stage 2 or
-Stage 3 unit tests. No Gemini request is made by these stages.
+Gemini embedding access requires a user-supplied `GEMINI_API_KEY`. Keep the key
+only in the local environment or uncommitted `.env` file; never commit it. The
+embedding layer requires `EMBEDDING_MODEL=gemini-embedding-001` and
+`EMBEDDING_DIMENSION=768`, and rejects other non-empty model values or other
+dimensions. Database-only operations do not require the Gemini key.
 
 ## Document Extraction
 
@@ -112,6 +115,32 @@ table rows, and final windows are retained.
 
 Chunking is an application API rather than a separate command. It does not read
 files, request Gemini embeddings, or connect to PostgreSQL.
+
+## Gemini Document Embeddings
+
+The embedding boundary accepts one validated `ChunkedDocument` and submits all
+of its chunk contents in their existing zero-based order through one synchronous
+multi-content request. One-chunk documents use the same request path. Requests
+use exactly `gemini-embedding-001`, request 768 output dimensions, set the task
+type to retrieval document, and use only the source filename as the shared
+retrieval title. Chunk metadata, source paths, credentials, and page labels are
+not added to embedded text.
+
+Gemini must return exactly one vector for every input chunk. Missing vectors,
+count mismatches, dimensions other than 768, booleans, nulls, non-numeric or
+non-finite values, and zero vectors reject the complete operation. Valid vectors
+are converted to immutable tuples and manually L2-normalized to unit length.
+Chunks and all source metadata remain unchanged and positionally paired with
+their vectors. No partial embedded document is returned after any invalid
+vector.
+
+Provider failures are converted into safe application exceptions while the
+original SDK exception remains available as the internal cause. Public errors
+and metadata-only logs omit API keys, request bodies, chunk content, vectors,
+raw responses, and local source paths. The application does not implement
+custom retry or backoff and relies on the pinned Google Gen AI SDK behavior.
+The embedding boundary does not read files, chunk documents, hash content,
+connect to PostgreSQL, or insert rows.
 
 ## Database Setup
 
@@ -186,9 +215,17 @@ python -m pytest tests/unit/test_chunking_validation.py \
   tests/unit/test_paragraph_chunking.py
 ```
 
-These tests use constructed extracted documents or small synthetic fixtures.
-They do not download documents or spaCy models, require Gemini credentials, or
-contact external services.
+Run only the Stage 4 embedding tests with:
+
+```bash
+python -m pytest tests/unit/test_embedding_config.py \
+  tests/unit/test_gemini_embeddings.py
+```
+
+These tests use constructed documents, small synthetic fixtures, and injected
+Gemini fakes. Automated tests do not download documents or spaCy models, require
+Gemini credentials, or contact Gemini. CI uses no Gemini key and all Gemini
+responses and failures are mocked.
 
 Database integration tests require the healthy Compose service and a matching
 `POSTGRES_URL` in `.env`:
@@ -219,10 +256,11 @@ python -m rag_app.cli reset --yes
 The supported chunking strategies are `fixed`, `sentence`, and `paragraph`.
 The public indexing and search workflows remain incomplete because extraction,
 chunking, embeddings, and persistence are not connected into a complete flow.
-Gemini embedding requests and database insertion are not implemented. The
-commands expose help and validate their arguments, but report that later-stage
-application functionality is unavailable. Only `database-init` and
-`database-check` are currently functional commands.
+Database insertion, duplicate-document handling, query embedding, and semantic
+search are not implemented. The commands expose help and validate their
+arguments, but report that later-stage application functionality is
+unavailable. Only `database-init` and `database-check` are currently functional
+commands.
 
 ## Architecture
 
@@ -230,7 +268,8 @@ application functionality is unavailable. Only `database-init` and
   extraction.
 - `rag_app/processing`: implemented shared cleaning and all three bounded,
   page-aware chunking strategies.
-- `rag_app/embeddings`: Gemini embedding requests and dimension validation.
+- `rag_app/embeddings`: implemented Gemini document requests, strict response
+  validation, safe provider errors, and shared L2 normalization.
 - `rag_app/database`: implemented PostgreSQL connection, schema, and readiness
   boundaries; later persistence and vector search remain planned.
 - `rag_app/services`: indexing and search use-case orchestration.

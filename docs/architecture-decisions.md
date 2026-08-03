@@ -142,3 +142,23 @@ later stages add resolved implementation details without removing them.
 95. Remove only empty or whitespace-only chunks and preserve all meaningful short chunks without imposing a minimum content length.
 96. Normalize external strategy strings by trimming and lowercasing, reject aliases or unsupported values, and retain only the canonical `fixed`, `sentence`, or `paragraph` value.
 97. Define the canonical chunking strategy type once outside the CLI and share it between the CLI and processing layer.
+
+## Stage 4 Gemini Embeddings Implementation
+
+98. Embed one complete chunked document with one synchronous multiple-content Gemini request, including documents containing only one chunk.
+99. Do not use Gemini asynchronous Batch API jobs, files, polling, or background processing for document embedding.
+100. Use exactly `gemini-embedding-001` with `output_dimensionality=768` and reject every configured alternative.
+101. Use the `RETRIEVAL_DOCUMENT` task type and the source filename basename as the common retrieval title for all chunks in the request.
+102. Submit only chunk content in existing `chunk_index` order and pair returned vectors with chunks strictly by response position.
+103. Require exactly one returned embedding for every submitted chunk and reject missing, null, empty, shorter, or longer response collections.
+104. Require exactly 768 numeric non-boolean finite values in every returned vector without truncating, padding, repeating, or repairing values.
+105. Reject zero vectors and vectors with non-finite norms, then manually L2-normalize every accepted vector and verify its unit norm.
+106. Return one immutable embedded-document result that retains each original chunk and all source metadata without adding database identifiers, hashes, timestamps, or credentials.
+107. Validate and normalize every vector before constructing the embedded document so any invalid vector prevents a partial result.
+108. Inject a compatible Gemini client in tests and construct the official Developer API client only after input and credential validation in production.
+109. Make no application-level retry, backoff, sleep, or second request; use only behavior provided by the pinned Google Gen AI SDK.
+110. Load embedding-only configuration independently of PostgreSQL while retaining a separate database-only configuration loader independent of Gemini.
+111. Exclude the Gemini API key from settings representations, public exceptions, logs, request content, and returned models.
+112. Convert SDK API and transport failures into categorized application exceptions without copying raw provider details, while preserving the provider exception as the internal cause.
+113. Log embedding metadata only: approved model, dimension, chunk count, source filename basename, strategy, response count, and safe failure category.
+114. Share strict vector validation and L2 normalization through a numerical embedding module so later query embeddings can use identical behavior.
