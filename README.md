@@ -1,475 +1,650 @@
 # Jeen RAG Semantic Search
 
-A Python application for indexing PDF and DOCX documents and retrieving relevant
-content with Gemini embeddings and PostgreSQL/pgvector semantic search.
+## Project Overview
 
-## Status
+Jeen RAG Semantic Search is a synchronous Python application that indexes PDF and
+DOCX documents and retrieves semantically related chunks. It extracts and cleans
+text, applies a selected chunking strategy, creates Gemini embeddings, stores the
+chunks and metadata in PostgreSQL with pgvector, and searches them by cosine
+distance.
 
-Stage 8 provides a tested and quality-gated synchronous document indexing and
-semantic search baseline for PDF and DOCX content. Expected validation, Gemini,
-and PostgreSQL failures use safe application exceptions, concise CLI messages,
-and predictable exit codes without tracebacks. Duplicate indexing is skipped
-and changed content is atomically replaced within the documented filename and
-strategy scope.
-Generated answers and index reset are not implemented.
+The application returns matching source chunks and metadata. It does **not**
+generate or synthesize a final natural-language answer.
 
-## Runtime
+## Current Implementation Status
 
-The supported runtime is Python `>=3.12,<3.13`. The repository's
-`.python-version` selects Python 3.12.
+The current implementation provides:
 
-Install an available Python 3.12 release if needed. For example, with pyenv:
+- PDF and DOCX extraction and cleaning.
+- Fixed-size, sentence-based, and paragraph-based chunking.
+- Gemini document and query embeddings using `gemini-embedding-001` with 768
+  dimensions.
+- Transactional PostgreSQL persistence with duplicate detection and atomic
+  replacement.
+- Strategy-scoped semantic search through pgvector's cosine-distance operator.
+- Root-level indexing and search wrappers plus a unified Typer CLI.
+- Unit and PostgreSQL integration tests that use deterministic Gemini fakes.
+
+Expected validation, Gemini, and PostgreSQL failures produce concise CLI errors
+without exposing credentials or local source paths. Destructive application-level
+index reset and generated answers are not implemented.
+
+## Supported Documents and Chunking Strategies
+
+Document extensions are matched case-insensitively.
+
+| Type | Extraction behavior |
+| --- | --- |
+| PDF (`.pdf`) | Extracted page by page with `pypdf`; chunks retain one-based physical page numbers. |
+| DOCX (`.docx`) | Main-body paragraphs and table rows are extracted in document order with `python-docx`; page numbers are `NULL`. |
+
+The `--strategy` option is required and accepts exactly `fixed`, `sentence`, or
+`paragraph`:
+
+- `fixed`: creates windows of at most 2,000 Python characters with 500
+  characters of overlap and a 1,500-character step. The limit is measured in
+  characters, not tokens, words, bytes, or model units.
+- `sentence`: uses the English spaCy Sentencizer and normally emits one detected
+  non-empty sentence per chunk without overlap. An individual sentence longer
+  than 2,000 characters falls back to fixed-size windows with 500-character
+  overlap. No downloaded spaCy language model is required.
+- `paragraph`: normally emits one detected non-empty paragraph per chunk, which
+  may contain several sentences. PDF paragraphs depend on blank-line separators
+  in extracted text; DOCX extracted units provide paragraph boundaries. An
+  oversized paragraph is split into independent sentence chunks, and an
+  oversized individual sentence then uses fixed-size overlap.
+
+Short semantic units are not combined. PDF pages are processed independently, so
+chunks never span physical pages. Chunk indexes are zero-based and continuous
+across the complete document.
+
+## Architecture and Indexing Flow
+
+Indexing performs these operations in order:
+
+1. Validate that the path is a readable PDF or DOCX file and normalize the
+   selected strategy.
+2. Verify PostgreSQL and the expected pgvector schema.
+3. Hash the exact file bytes with SHA-256 and check the stored document state.
+4. Extract and clean text while retaining source order and available page
+   metadata.
+5. Produce chunks with the selected strategy.
+6. Generate Gemini retrieval-document embeddings in ordered synchronous batches
+   of at most 100 chunks.
+7. Validate every vector, require exactly 768 finite dimensions, reject zero
+   vectors, and L2-normalize valid vectors.
+8. Persist all chunks and metadata in one PostgreSQL transaction.
+
+Search validates the query and strategy, checks schema readiness, creates one
+768-dimensional Gemini retrieval-query embedding, validates and normalizes it,
+and retrieves only rows stored with the selected strategy. PostgreSQL orders the
+retrieved candidates by the pgvector cosine-distance operator `<=>`.
+
+## Prerequisites
+
+Only Python 3.12 and the CI environment are tested; this README does not claim
+support for other Python versions or operating systems.
+
+| Prerequisite | Purpose |
+| --- | --- |
+| Python 3.12 | Runs the application, CLI, and tests. The repository's `.python-version` selects 3.12. |
+| Git | Clones the repository and supports history secret scanning. |
+| Docker with Docker Compose support | Runs the pinned PostgreSQL/pgvector service. Compose must support `docker compose up --wait`. |
+| Gemini API key | Required for new or changed document embeddings and semantic-search query embeddings. |
+| Internet access | Installs Python dependencies, downloads the Compose image and example PDF, and reaches Gemini for real requests. |
+| Suitable shell | Sets environment variables and runs the documented commands. POSIX-compatible examples are used except where PowerShell is shown explicitly. |
+
+PostgreSQL and pgvector do not need to be installed on the host. They run in
+Docker Compose from the pinned `pgvector/pgvector:0.8.2-pg17-bookworm` image.
+
+`curl` is optional because the Bitcoin PDF can be downloaded in a browser or
+with PowerShell. Gitleaks 8.30.1 is optional for normal application use but is
+required to reproduce the repository's complete secret-scanning quality gate.
+
+## Installation
+
+Start from a fresh clone:
 
 ```bash
-pyenv install 3.12
+git clone https://github.com/DavidSnir/jeen-rag-semantic-search.git
+cd jeen-rag-semantic-search
 ```
 
-Verify that Python 3.12 is selected before installing dependencies:
+Create a Python 3.12 virtual environment.
+
+POSIX-compatible shell:
 
 ```bash
-python --version
-python -c "import sys; assert sys.version_info[:2] == (3, 12)"
-```
-
-Create and activate a virtual environment:
-
-```bash
-python -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
+```
+
+Windows PowerShell:
+
+```powershell
+py -3.12 -m venv .venv
+.venv\Scripts\Activate.ps1
+```
+
+Upgrade the installer, install the pinned application dependencies, and create
+the local environment file:
+
+```bash
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-```
-
-## PostgreSQL Prerequisites
-
-Install Docker Desktop or another Docker environment with Docker Compose support.
-The Compose configuration uses the pinned image
-`pgvector/pgvector:0.8.2-pg17-bookworm`; no local PostgreSQL installation is
-required.
-
-## Configuration
-
-Create a local environment file and provide real values at runtime:
-
-```bash
 cp .env.example .env
 ```
 
-Set `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_PORT`, and
-`POSTGRES_URL` in `.env`. The individual values are consumed by Docker Compose,
-while the Python application uses only `POSTGRES_URL`.
+In PowerShell, replace the final command with:
 
-Keep these values consistent. For example, changing `POSTGRES_PASSWORD` also
-requires changing the password component of `POSTGRES_URL`. URL-encode any
-URI-special characters used in that component. Replace the example password
-before starting PostgreSQL. Never commit `.env` or real credentials.
-
-Gemini embedding access requires a user-supplied `GEMINI_API_KEY`. Keep the key
-only in the local environment or uncommitted `.env` file; never commit it. The
-embedding layer requires `EMBEDDING_MODEL=gemini-embedding-001` and
-`EMBEDDING_DIMENSION=768`, and rejects other non-empty model values or other
-dimensions. Database-only operations do not require the Gemini key.
-
-Indexing and semantic search require both a reachable PostgreSQL database with
-the canonical schema and a valid Gemini key. Automated tests inject Gemini
-fakes and neither need nor use a real key.
-
-## Document Extraction
-
-The application extraction boundary validates that a supplied path exists,
-points to a readable regular file, and has a supported extension. `.pdf` and
-`.docx` extensions are accepted case-insensitively.
-
-PDF text is extracted page by page with one-based physical page numbers. Blank
-pages are omitted without renumbering later pages. Recurring text is removed
-only from conservative page-edge regions. DOCX paragraphs and table rows are
-extracted from the main body in their original relative order; table cells use
-` | ` as their visible separator. DOCX units do not have page numbers.
-
-OCR is not supported. Scanned or image-only PDFs must contain embedded text to
-be usable. Password-protected PDFs are not supported. Malformed files and
-documents with no extractable text are rejected with safe application errors.
-Extraction is currently an application API rather than a separate CLI command.
-
-## Document Chunking
-
-The application-level chunking boundary accepts an already extracted document
-and one of three canonical strategies:
-
-- `fixed` constructs 2,000-character windows with 500 characters of overlap and
-  a 1,500-character step. Size is measured in Python characters, not tokens,
-  words, bytes, or embedding-model units.
-- `sentence` uses a lazily initialized `spacy.blank("en")` pipeline containing
-  only the Sentencizer and returns each detected non-empty sentence as one
-  independent chunk.
-- `paragraph` preserves DOCX extracted-unit boundaries and detects PDF
-  paragraphs at blank lines. Each detected non-empty paragraph is returned as
-  one independent chunk.
-
-Short sentences and paragraphs are never combined. The 2,000-character limit
-is used only as a fallback threshold for an individual oversized semantic unit:
-an oversized paragraph is split into independent sentence chunks, and any
-individual oversized sentence is split into fixed-size chunks with the
-500-character overlap. Normal sentence and paragraph chunks do not overlap.
-No downloaded spaCy language model is required.
-
-Every PDF page is processed independently, so no chunk spans physical pages and
-each PDF chunk retains its one-based source page number. DOCX chunks keep a null
-page number. Chunk ordering always matches source-document ordering, and chunk
-indexes are zero-based and continuous across the complete document.
-Empty results are removed, but meaningful short titles, sentences, paragraphs,
-table rows, and final windows are retained.
-
-Chunking is an application API rather than a separate command. It does not read
-files, request Gemini embeddings, or connect to PostgreSQL.
-
-## Gemini Document Embeddings
-
-The embedding boundary accepts one validated `ChunkedDocument` and submits all
-of its chunk contents in their existing zero-based order through one synchronous
-multi-content request. One-chunk documents use the same request path. Requests
-use exactly `gemini-embedding-001`, request 768 output dimensions, set the task
-type to retrieval document, and use only the source filename as the shared
-retrieval title. Chunk metadata, source paths, credentials, and page labels are
-not added to embedded text.
-
-Gemini must return exactly one vector for every input chunk. Missing vectors,
-count mismatches, dimensions other than 768, booleans, nulls, non-numeric or
-non-finite values, and zero vectors reject the complete operation. Valid vectors
-are converted to immutable tuples and manually L2-normalized to unit length.
-Chunks and all source metadata remain unchanged and positionally paired with
-their vectors. No partial embedded document is returned after any invalid
-vector.
-
-Provider failures are converted into safe application exceptions while the
-original SDK exception remains available as the internal cause. Public errors
-and metadata-only logs omit API keys, request bodies, chunk content, vectors,
-raw responses, and local source paths. The application does not implement
-custom retry or backoff and relies on the pinned Google Gen AI SDK behavior.
-The embedding boundary does not read files, chunk documents, hash content,
-connect to PostgreSQL, or insert rows.
-
-## Database Setup
-
-Start PostgreSQL and wait until its configured health check passes:
-
-```bash
-docker compose up --detach --wait postgres
+```powershell
+Copy-Item .env.example .env
 ```
 
-Inspect health or startup logs when needed:
+These help commands load configuration-free and do not contact PostgreSQL or
+Gemini:
+
+```bash
+python -m rag_app.cli --help
+python index_documents.py --help
+python search.py --help
+```
+
+## Environment Configuration
+
+Edit the uncommitted `.env` file before starting PostgreSQL. Values already
+exported by the shell take precedence over values loaded from `.env`.
+
+| Variable | Consumer | Required and expected value |
+| --- | --- | --- |
+| `GEMINI_API_KEY` | Application | Required when a Gemini embedding request is needed. Use a valid Gemini Developer API key; an empty placeholder is acceptable only for setup, database commands, and automated tests. |
+| `POSTGRES_URL` | Application | Required for every database command, indexing operation, and search. Use a PostgreSQL URI such as `postgresql://USER:PASSWORD@HOST:PORT/DATABASE`. Its components must match the Compose values. |
+| `POSTGRES_DB` | Docker Compose | Required. Names the database created when the Compose volume is first initialized. A synthetic local name is acceptable. |
+| `POSTGRES_USER` | Docker Compose | Required. Names the PostgreSQL role created on the first empty volume. A synthetic local role is acceptable. |
+| `POSTGRES_PASSWORD` | Docker Compose | Required. Initializes the local role password on the first empty volume. Use a non-reused synthetic local password and URL-encode URI-special characters in `POSTGRES_URL`. |
+| `POSTGRES_PORT` | Docker Compose | Required. An available host port mapped to PostgreSQL's container port `5432`, for example `5432`. |
+| `EMBEDDING_MODEL` | Application | Optional because it defaults to `gemini-embedding-001`. Any other non-empty model is rejected. |
+| `EMBEDDING_DIMENSION` | Application | Optional because it defaults to `768`. If set, it must be the integer `768`. |
+| `LOG_LEVEL` | Aggregate settings only | Optional and defaults to `INFO`; the current CLI keeps package logging quiet and does not configure output from this value. |
+
+The individual `POSTGRES_*` values configure Compose, while the Python
+application connects only through `POSTGRES_URL`. Changing database credentials
+in `.env` after a volume has been initialized does not update the existing
+PostgreSQL database, role, or password. Use the original values or deliberately
+create a fresh volume.
+
+Never commit `.env`. `.env.example` must contain placeholders only. Do not place
+API keys, reusable passwords, private connection strings, or credentials in
+README output, logs, screenshots, issue reports, or Git history.
+
+Unit tests and normal integration tests use Gemini fakes and do not need a real
+Gemini key. Integration tests require an explicitly exported, disposable
+database whose name ends in `_test`; they erase all rows from its `chunks` table.
+
+## PostgreSQL and pgvector Setup
+
+Validate the Compose configuration, start PostgreSQL, and wait for its configured
+health check:
+
+```bash
+docker compose config --quiet
+docker compose up --detach --wait --wait-timeout 90 postgres
+```
+
+The image already includes pgvector. The service, network, and `postgres_data`
+volume are scoped to the current Compose project; the configuration does not use
+a fixed container name or checkout-global volume name.
+
+Inspect service state, readiness, and logs:
 
 ```bash
 docker compose ps postgres
-docker compose exec postgres pg_isready -h localhost -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+docker compose exec -T postgres sh -c \
+  'pg_isready -h localhost -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 docker compose logs postgres
 ```
 
-On the first creation of the named volume, PostgreSQL executes
-`rag_app/database/schema.sql` automatically. This file is the only canonical
-schema definition. Docker entrypoint initialization does not rerun for an
-existing volume, so the application also provides an idempotent initializer:
+The `sh -c` form expands the variables inside the container. Merely copying
+`.env` does not export those values into the host shell.
 
-```bash
-python -m rag_app.cli database-init
-```
-
-Verify connectivity, pgvector registration, the complete table definition,
-constraints, relational indexes, and HNSW cosine index independently:
-
-```bash
-python -m rag_app.cli database-check
-```
-
-Stop the container without deleting indexed data:
+Stop PostgreSQL while preserving the named volume and indexed data:
 
 ```bash
 docker compose down
 ```
 
-For a complete development reset, remove the container and named volume:
+Start it again with the same `docker compose up` command. The named volume
+preserves PostgreSQL state across ordinary container restarts.
+
+For a deliberate complete local reset:
 
 ```bash
-docker compose down --volumes
+docker compose down --volumes --remove-orphans
 ```
 
-Warning: `docker compose down --volumes` permanently deletes all locally indexed
-data stored in this Compose project's PostgreSQL volume.
+**Warning:** `--volumes` permanently deletes this Compose project's complete
+PostgreSQL volume, including every locally indexed chunk. It is not normal
+shutdown or cleanup.
+
+## Schema Initialization and Verification
+
+The canonical schema is
+[`rag_app/database/schema.sql`](rag_app/database/schema.sql). Docker mounts it at
+`/docker-entrypoint-initdb.d/001-schema.sql`, so PostgreSQL applies it
+automatically when it creates a new empty Compose volume. Entrypoint scripts do
+not rerun for an existing volume.
+
+Explicitly apply the canonical schema and validate the result:
+
+```bash
+python -m rag_app.cli database-init
+```
+
+Independently verify connectivity and the complete expected schema:
+
+```bash
+python -m rag_app.cli database-check
+```
+
+`database-init` is idempotent and can be run more than once. It is a bootstrap
+operation, not a general migration framework, and it does not upgrade or repair
+an arbitrary incompatible existing table. The project currently has no general
+migration command. `database-check` is the strict readiness check used before
+indexing and search; those operations do not automatically run
+`database-init`.
+
+The schema provides:
+
+- The pgvector `vector` extension.
+- A `public.chunks` table with chunk content and a `vector(768)` embedding.
+- Source filename, source type, SHA-256 document hash, zero-based chunk index,
+  chunking strategy, optional PDF page number, and creation timestamp.
+- Constraints for non-empty content, supported source types and strategies,
+  valid hashes, indexes, and page metadata.
+- A uniqueness constraint over source filename, document hash, strategy, and
+  chunk index to prevent duplicate version rows.
+- B-tree indexes for document and hash lookup plus an HNSW
+  `vector_cosine_ops` index for cosine search.
 
 ## Document Indexing
 
-Before indexing, configure `.env`, start PostgreSQL, and initialize and verify
-the canonical schema as described above. Set a valid `GEMINI_API_KEY`, then use
-either the assignment-compatible entry point:
+Before indexing, configure `.env`, start PostgreSQL, initialize and verify its
+schema, and set a valid `GEMINI_API_KEY`.
+
+Use the root wrapper:
 
 ```bash
 python index_documents.py --file data/input/document.pdf --strategy fixed
 ```
 
-or the equivalent unified CLI command:
+Replace the example path with an existing supported document. The Bitcoin
+demonstration below provides a directly reproducible input file.
+
+Or use the equivalent unified command:
 
 ```bash
-python -m rag_app.cli index --file data/input/document.docx --strategy paragraph
+python -m rag_app.cli index \
+  --file data/input/document.docx \
+  --strategy paragraph
 ```
 
-Both `.pdf` and `.docx` files are supported, and `fixed`, `sentence`, and
-`paragraph` are the available strategies. Indexing calculates SHA-256 over the
-exact binary bytes of the source file before extraction. This means even a
-binary-only change, such as rewritten PDF or DOCX container metadata, produces
-a different hash whether or not the extracted text changed.
+There is no default indexing strategy. New and changed documents require a live
+Gemini request. An exact duplicate is detected after database readiness, file
+validation, hashing, and stored-state lookup, but before extraction or Gemini
+configuration is loaded.
 
-Replacement scope is the source filename basename plus chunking strategy; the
-source directory is intentionally not stored. The resulting behavior is:
+Index identity and replacement behavior are:
 
-- The same basename, exact bytes, and strategy is skipped without extraction,
-  a Gemini request, or new inserts.
-- The same basename and strategy with different bytes replaces all chunks in
-  that scope.
-- The same basename indexed with a different strategy coexists as a separate
-  indexed representation.
-- A different basename coexists even when its binary content is identical.
-- Renaming a file therefore creates a separate indexed document rather than
-  replacing chunks stored under the old basename.
+- The same filename basename, exact file bytes, and strategy is skipped.
+- The same filename and strategy with changed bytes atomically replaces the old
+  version. Failed extraction, embedding, validation, or persistence preserves the
+  existing version.
+- Different strategies coexist for the same source file.
+- Different basenames coexist even when their bytes are identical.
+- Source directories are not stored, so files in different directories with the
+  same basename and strategy represent one logical document and can skip or
+  replace one another.
 
-This basename-only identity has an important limitation: files in different
-directories with the same basename and strategy are treated as one logical
-document. Depending on their exact bytes, the later operation will skip or
-replace the earlier one.
-
-Persistence serializes concurrent updates for one basename and strategy, then
-rechecks duplicate state. Deletion of an old version, insertion of every new
-chunk, and post-insert verification occur in one transaction. A failure rolls
-back the complete replacement, so old chunks are preserved and no partial new
-version remains. Insertion prefers PostgreSQL `COPY FROM STDIN` and falls back
-to `executemany()` only when the cursor does not provide COPY.
-
-Each row stores chunk content and its normalized embedding together with
-`source_file`, `document_hash`, `source_type`, `chunk_index`,
-`chunking_strategy`, `page_number`, and the database-generated `created_at`.
-PDF page numbers remain one-based; DOCX page numbers are `NULL`. A successful
-command prints whether the document was indexed, replaced, or skipped, followed
-by its basename, strategy, chunk count, and elapsed time.
-
-Extraction, chunking, and Gemini embedding complete before persistence begins.
-If Gemini fails or returns any invalid embedding, a new document writes no
-rows, and an existing version awaiting replacement remains unchanged. Gemini
-never produces partial persisted document data.
+The document hash covers exact binary bytes. Rewriting PDF or DOCX container
+metadata can therefore produce a new version even when extracted text appears
+unchanged.
 
 ## Semantic Search
 
-Before searching, configure `.env`, start PostgreSQL, initialize and verify the
-canonical schema, and index at least one document with the strategy to search.
-Set a valid `GEMINI_API_KEY`, then use either the assignment-compatible entry
-point:
+Search requires a query and one explicit strategy:
 
 ```bash
-python search.py --query "What is proof of work?" --strategy fixed
+python search.py \
+  --query "How does proof-of-work prevent double-spending?" \
+  --strategy paragraph
 ```
 
-or the equivalent unified CLI command:
+The default result limit is `top_k=5`. Request a different positive limit with
+`--top-k`:
 
 ```bash
 python -m rag_app.cli search \
-  --query "What is proof of work?" \
+  --query "How does proof-of-work prevent double-spending?" \
   --strategy paragraph \
-  --top-k 10
+  --top-k 2
 ```
 
-Search trims and validates the query, then embeds it with exactly
-`gemini-embedding-001`, the `RETRIEVAL_QUERY` task type, and 768 output
-dimensions. Query requests contain no retrieval title. The returned vector is
-strictly validated and L2-normalized using the same numerical boundary as
-document embeddings.
+Search examines only rows indexed with the selected strategy; it never searches
+across strategies. Results are ordered by pgvector cosine distance, nearest
+retrieved candidate first. The CLI displays `score = 1 - cosine_distance` rounded
+to four decimal places rather than displaying raw distance. Higher scores mean
+greater cosine similarity, and scores may be negative.
 
-Retrieval executes a read-only SQL `SELECT` against `public.chunks`, filters by
-the selected chunking strategy, orders by pgvector cosine distance with `<=>`,
-and applies the requested result limit. The default `top_k` is `5`; pass a
-positive `--top-k` value to override it. Results are ordered nearest first and
-show chunk content, rank, `source_file`, `source_type`, `chunk_index`, strategy,
-PDF page number when available, and a similarity score calculated as
-`1 - cosine_distance`.
+The query is compatible with the HNSW index, but PostgreSQL decides whether to
+use that index. When selected, HNSW retrieval is approximate rather than an
+exhaustive exact scan. No relevance threshold is applied: if rows exist for the
+strategy, the command can return weak matches. If no rows exist, it prints an
+empty-result message and exits successfully after the required schema and Gemini
+query embedding operations.
 
-Higher scores indicate greater cosine similarity. Search is limited to the
-selected strategy and returns stored chunks, not generated answers. It never
-loads stored vectors or document hashes into the CLI result.
+Results contain stored chunk text and metadata, not an AI-generated answer.
+Search is read-only and does not expose stored vectors, hashes, row IDs, or
+timestamps.
 
-No relevance threshold is applied. If indexed chunks exist for the selected
-strategy, search returns the nearest neighbors even when they are irrelevant to
-the query; callers must interpret the score accordingly. If no rows exist for
-the strategy, the command prints an empty-result message and exits successfully
-with status code `0`. Search does not insert, update, or delete indexed data and
-does not generate a synthesized answer.
+## Reproducible Bitcoin Whitepaper Demonstration
 
-## Tests
+The demonstration uses Satoshi Nakamoto's English Bitcoin Whitepaper from the
+[official Bitcoin project source](https://bitcoin.org/bitcoin.pdf). Keep local
+input documents in `data/input/`, whose contents are already ignored by Git. Do
+not commit the PDF or add another filename-specific ignore rule.
 
-Unit tests do not require a running database:
+Download it in a POSIX-compatible shell:
+
+```bash
+curl --fail --location \
+  --output data/input/bitcoin.pdf \
+  https://bitcoin.org/bitcoin.pdf
+```
+
+Or in Windows PowerShell:
+
+```powershell
+Invoke-WebRequest `
+  -Uri https://bitcoin.org/bitcoin.pdf `
+  -OutFile data/input/bitcoin.pdf
+```
+
+The PDF used for the captured demonstration is 184,292 bytes with SHA-256:
+
+```text
+b1674191a88ec5cdd733e4240a81803105dc412d6c6708d53ab94fc248f4f553
+```
+
+Verify it in a POSIX-compatible shell:
+
+```bash
+shasum -a 256 data/input/bitcoin.pdf
+```
+
+Or in Windows PowerShell:
+
+```powershell
+(Get-FileHash data/input/bitcoin.pdf -Algorithm SHA256).Hash.ToLower()
+```
+
+If the checksum differs, do not expect the documented chunk counts or search
+evidence to match; obtain the verified English PDF before continuing.
+
+The following commands were run against an empty PostgreSQL volume using the
+official PDF. Elapsed time varies by machine and provider response time.
+
+```bash
+python index_documents.py --file data/input/bitcoin.pdf --strategy fixed
+python index_documents.py --file data/input/bitcoin.pdf --strategy sentence
+python index_documents.py --file data/input/bitcoin.pdf --strategy paragraph
+python index_documents.py --file data/input/bitcoin.pdf --strategy fixed
+```
+
+Actual indexing and duplicate-skip output:
+
+```text
+Indexed document: bitcoin.pdf | strategy=fixed | chunks=16 | elapsed=2.22s
+Indexed document: bitcoin.pdf | strategy=sentence | chunks=161 | elapsed=7.07s
+Indexed document: bitcoin.pdf | strategy=paragraph | chunks=142 | elapsed=6.57s
+Skipped unchanged document: bitcoin.pdf | strategy=fixed | chunks=16 | elapsed=0.05s
+```
+
+Actual chunk-count comparison for the same file:
+
+| Strategy | Chunks |
+| --- | ---: |
+| `fixed` | 16 |
+| `sentence` | 161 |
+| `paragraph` | 142 |
+
+The reproducible search query is:
+
+```text
+How does proof-of-work prevent double-spending?
+```
+
+Run it against the paragraph representation and request two results:
+
+```bash
+python search.py \
+  --query "How does proof-of-work prevent double-spending?" \
+  --strategy paragraph \
+  --top-k 2
+```
+
+Actual output from the indexed data:
+
+```text
+Result 1 | score=0.7263
+source=bitcoin.pdf | type=PDF | strategy=paragraph | chunk=48 | page=3
+Once the CPU
+effort has been expended to make it satisfy the proof-of-work, the block cannot be changed
+without redoing the work.
+------------------------------------------------------------------------
+Result 2 | score=0.7079
+source=bitcoin.pdf | type=PDF | strategy=paragraph | chunk=55 | page=3
+To modify a past block, an attacker would have to
+redo the proof-of-work of the block and all blocks after it and then catch up with and surpass the
+work of the honest nodes.
+```
+
+These scores and ranks came from a real Gemini request and may change if the
+provider's embedding behavior changes. The metadata and stored chunks correspond
+to the database evidence below.
+
+## Database Inspection
+
+The Compose image includes `psql`. This query uses the database name and role
+inside the container, reports all three strategy counts, and inspects the two
+chunks returned by the demonstration search. It shows dimensions only, never
+full vectors.
+
+```bash
+docker compose exec -T postgres sh -c \
+  'PGUSER="$POSTGRES_USER" PGDATABASE="$POSTGRES_DB" psql --no-psqlrc --pset pager=off' <<'SQL'
+SELECT source_file,
+       chunking_strategy AS strategy,
+       count(*) AS chunks,
+       min(vector_dims(embedding)) AS dimensions
+FROM public.chunks
+GROUP BY source_file, chunking_strategy
+ORDER BY source_file, chunking_strategy;
+
+SELECT source_file,
+       chunking_strategy AS strategy,
+       chunk_index,
+       page_number,
+       left(replace(content, chr(10), chr(32)), 88) AS content_preview,
+       vector_dims(embedding) AS dimensions
+FROM public.chunks
+WHERE source_file = 'bitcoin.pdf'
+  AND chunking_strategy = 'paragraph'
+  AND chunk_index IN (48, 55)
+ORDER BY chunk_index;
+SQL
+```
+
+Actual output; content is intentionally limited by the query to an 88-character
+preview:
+
+```text
+ source_file | strategy  | chunks | dimensions
+-------------+-----------+--------+------------
+ bitcoin.pdf | fixed     |     16 |        768
+ bitcoin.pdf | paragraph |    142 |        768
+ bitcoin.pdf | sentence  |    161 |        768
+(3 rows)
+
+ source_file | strategy  | chunk_index | page_number |                                     content_preview                                      | dimensions
+-------------+-----------+-------------+-------------+------------------------------------------------------------------------------------------+------------
+ bitcoin.pdf | paragraph |          48 |           3 | Once the CPU effort has been expended to make it satisfy the proof-of-work, the block ca |        768
+ bitcoin.pdf | paragraph |          55 |           3 | To modify a past block, an attacker would have to redo the proof-of-work of the block an |        768
+(2 rows)
+```
+
+## Testing and Quality Checks
+
+Validate dependencies, linting, formatting, CLI loading, deterministic fixtures,
+and Compose configuration:
+
+```bash
+python -m pip check
+python -c "from google import genai; import coverage, docx, dotenv, pgvector, psycopg, pypdf, pytest, pytest_cov, ruff, spacy, typer"
+python -m ruff check .
+python -m ruff format --check .
+python -m rag_app.cli --help
+python index_documents.py --help
+python search.py --help
+python tests/fixtures/generate_fixtures.py
+git diff --exit-code -- tests/fixtures
+docker compose config --quiet
+```
+
+Run the unit suite directly when a database is not needed:
 
 ```bash
 python -m pytest tests/unit
 ```
 
-Run only the Stage 2 document tests with:
+The complete coverage gate below runs unit tests and integration tests. The
+subshell uses a separate Compose project, explicitly exported synthetic
+credentials, and a database ending in `_test`. Its trap removes the disposable
+volume even when a command fails.
+
+**Warning:** integration tests run `TRUNCATE TABLE public.chunks RESTART IDENTITY`
+before and after every test. Never point them at a database containing data you
+want to keep, even if its name happens to end in `_test`.
 
 ```bash
-python -m pytest tests/unit/test_document_validation.py \
-  tests/unit/test_pdf_extraction.py \
-  tests/unit/test_docx_extraction.py \
-  tests/unit/test_text_cleaning.py
+(
+  set -e
+  python -m coverage erase
+  python -m coverage run --source=rag_app -m pytest tests/unit
+  export POSTGRES_DB=rag_app_test
+  export POSTGRES_USER=rag_app_test
+  export POSTGRES_PASSWORD=local-test-only-password
+  export POSTGRES_PORT=55432
+  export POSTGRES_URL=postgresql://rag_app_test:local-test-only-password@localhost:55432/rag_app_test
+  trap 'docker compose -p rag-integration-test down --volumes --remove-orphans' EXIT
+  docker compose -p rag-integration-test up --detach --wait --wait-timeout 90 postgres
+  python -m rag_app.cli database-init
+  python -m coverage run --append --source=rag_app -m pytest tests/integration
+  python -m coverage report --fail-under=80
+)
 ```
 
-Run only the Stage 3 chunking tests with:
+Automated tests remove ambient Gemini credentials and block construction of a
+real Gemini client. They do not contact Gemini or need a valid key.
+
+With Gitleaks 8.30.1 installed, run the same redacted current-tree and complete
+Git-history scans as CI:
+
+The directory scan examines ignored and untracked files, including a populated
+`.env`. Run it from a clean verification checkout without real credentials, or
+temporarily keep `.env` outside the repository while scanning. Do not expose or
+allowlist a real key merely to make the local scan pass.
 
 ```bash
-python -m pytest tests/unit/test_chunking_validation.py \
-  tests/unit/test_fixed_chunking.py \
-  tests/unit/test_sentence_chunking.py \
-  tests/unit/test_paragraph_chunking.py
+gitleaks version
+gitleaks dir --redact --no-banner .
+gitleaks git --redact --no-banner --log-opts="--all -m" .
 ```
-
-Run only the Stage 4 embedding tests with:
-
-```bash
-python -m pytest tests/unit/test_embedding_config.py \
-  tests/unit/test_gemini_embeddings.py
-```
-
-Run the Stage 5 unit tests with:
-
-```bash
-python -m pytest tests/unit/test_document_hashing.py \
-  tests/unit/test_indexing_service.py \
-  tests/unit/test_indexing_cli.py \
-  tests/unit/test_chunk_persistence.py
-```
-
-Run the Stage 6 semantic-search unit tests with:
-
-```bash
-python -m pytest tests/unit/test_query_embeddings.py \
-  tests/unit/test_search_validation.py \
-  tests/unit/test_search_service.py \
-  tests/unit/test_semantic_search_repository.py \
-  tests/unit/test_search_cli.py
-```
-
-These tests use constructed documents, small synthetic fixtures, and injected
-Gemini fakes. Automated document and query embedding tests do not download
-documents or spaCy models, require Gemini credentials, or contact Gemini. CI
-uses no Gemini key and all Gemini responses and failures are mocked. CI uses
-pytest discovery for the complete unit and integration test directories, so
-new tests do not require a manually maintained test-file list.
-
-Run the Stage 7 error-handling tests with:
-
-```bash
-python -m pytest tests/unit/test_cli_error_handling.py \
-  tests/unit/test_root_entrypoints.py \
-  tests/unit/test_database_connection.py \
-  tests/unit/test_database_repository_errors.py
-```
-
-Database integration tests require an explicitly exported disposable database
-whose name ends in `_test`. The following synthetic credentials are for the
-isolated local Compose project only:
-
-```bash
-export POSTGRES_DB=rag_app_test
-export POSTGRES_USER=rag_app_test
-export POSTGRES_PASSWORD=local-test-only-password
-export POSTGRES_PORT=55432
-export POSTGRES_URL=postgresql://rag_app_test:local-test-only-password@localhost:55432/rag_app_test
-docker compose -p rag-integration-test up --detach --wait postgres
-python -m rag_app.cli database-init
-python -m pytest tests/integration
-docker compose -p rag-integration-test down --volumes --remove-orphans
-```
-
-## Commands
-
-The assignment-compatible indexing and search entry points are functional:
-
-```bash
-python index_documents.py --file data/input/document.pdf --strategy fixed
-python search.py --query "What is proof of work?" --strategy fixed --top-k 5
-```
-
-The corresponding unified commands are also functional:
-
-```bash
-python -m rag_app.cli index --file data/input/document.pdf --strategy fixed
-python -m rag_app.cli search --query "What is proof of work?" --strategy paragraph --top-k 5
-```
-
-The reset entry point exposes help and validates explicit confirmation, but its
-application functionality remains unavailable:
-
-```bash
-python -m rag_app.cli reset --yes
-```
-
-Generated answers and destructive index reset are not implemented.
-`database-init` and `database-check` remain functional database commands.
 
 ## Troubleshooting
 
-Expected application failures are written to standard error without a Python
-traceback. The root scripts and unified commands use the same application
-handlers and exit-code contract.
+Expected application failures are written to standard error without a traceback.
+Exit code `0` means success, duplicate skip, or an empty search; code `1` means an
+expected runtime/configuration failure; code `2` means invalid CLI usage.
 
-| Exit code | Meaning |
-| ---: | --- |
-| `0` | Successful indexing, duplicate skip, replacement, populated search, or empty search |
-| `1` | Expected application, configuration, Gemini, PostgreSQL, or unavailable-feature failure |
-| `2` | Invalid command syntax, missing option, unsupported strategy, invalid query, invalid `top_k`, or missing reset confirmation |
+| Symptom | Likely cause and safe corrective action | Existing database data |
+| --- | --- | --- |
+| Missing `GEMINI_API_KEY` | Set a valid key in the uncommitted `.env` file or process environment. Database-only commands and automated tests do not need it. | Unchanged. A new document writes nothing; a pending replacement preserves its old version. |
+| Gemini authentication or permission failure | Verify the key and that its project can use `gemini-embedding-001`. Revoke and replace a key if it may have been exposed; never print it for diagnosis. | Unchanged. |
+| Gemini quota or rate-limit failure | Check project quota and billing, wait when appropriate, and retry manually. The application does not add custom retry or backoff. | Unchanged. |
+| Gemini transport or temporary provider failure | Verify internet, DNS, proxy, and provider status before retrying. | Unchanged. |
+| Missing or invalid `POSTGRES_URL` | Set a valid PostgreSQL connection URI whose credentials, port, and database match the running service. Do not publish the URI. | Unchanged. |
+| `PostgreSQL is unavailable` | Start the `postgres` service, inspect `docker compose ps postgres`, and verify the URL and host-port mapping. | Unchanged. |
+| Database health check fails | Inspect `docker compose logs postgres`, check required Compose values, port conflicts, and whether credentials were changed after volume initialization. Do not delete the volume unless all local data is disposable. | Diagnostics are read-only; `down --volumes` would delete everything. |
+| Schema is missing or incompatible | Run `database-init`, then `database-check`. Initialization is idempotent but not a migration framework; investigate incompatible existing objects instead of bypassing validation. | Initialization preserves compatible rows. Deleting the volume to repair a disposable database removes all rows. |
+| Unsupported file extension | Supply a readable `.pdf` or `.docx`; other extensions and extensionless files are not supported. | Unchanged. |
+| File is missing, not regular, or unreadable | Correct the path or file permissions and retry. The CLI reports only the basename for path errors. | Unchanged. |
+| Document is empty after cleaning | Use a document containing meaningful extractable text. | Unchanged. |
+| Scanned or image-only PDF | OCR is not implemented. Obtain a PDF with embedded text or perform OCR outside this application before indexing a supported file. | Unchanged. |
+| Password-protected or malformed document | Supply an unencrypted, valid PDF or DOCX. Password handling is not implemented. | Unchanged. |
+| Embedding dimension mismatch or invalid vector | Keep `EMBEDDING_MODEL=gemini-embedding-001` and `EMBEDDING_DIMENSION=768`; do not pad, truncate, or manually insert provider vectors. Retry only after resolving provider/configuration issues. | Unchanged; no partial document or replacement is persisted. |
+| No indexed results for the selected strategy | Verify the requested strategy and index the document with that same strategy. An empty search is successful and cross-strategy fallback does not occur. | Search is read-only. |
+| `Skipped unchanged document` | This is expected when filename, strategy, and exact-byte hash match. Choose another strategy or index genuinely changed content if a new representation is intended. | Unchanged. |
+| Integration tests reject the database | Export `POSTGRES_URL` explicitly and target a separate disposable database whose name ends in `_test`. Do not weaken the guard. | The guard fails before test truncation; a valid test target is deliberately erased during tests. |
+| Ruff lint failure | Fix the reported code issue and rerun `python -m ruff check .`; do not suppress rules merely to pass the gate. | Application data is unaffected. |
+| Ruff formatting failure | Run `python -m ruff format .`, review the diff, and rerun the check. | Application data is unaffected. |
+| Coverage is below 80% | Add or correct meaningful tests, rerun both suites with coverage, and inspect uncovered behavior. | Only the explicitly disposable integration database is truncated. |
+| Gitleaks failure | Review the redacted finding. Remove and revoke real secrets, then clean affected Git history through an approved process; do not add broad ignores for unexplained findings. | Application data is unaffected. |
+| `reset --yes` reports unavailable | This is the implemented behavior. Use Compose volume deletion only when a complete destructive local reset is intended. | The command changes nothing. |
 
-| Symptom | Action |
-| --- | --- |
-| `PostgreSQL is unavailable` | Start the database service and verify that `POSTGRES_URL` targets it. |
-| `The database schema is not ready` | Run `python -m rag_app.cli database-init`, then rerun `database-check`. Verify the pinned PostgreSQL and pgvector versions if initialization fails. |
-| Missing `GEMINI_API_KEY` | Set the variable in the environment or uncommitted `.env` file. |
-| Gemini authentication or permission failure | Verify `GEMINI_API_KEY` and that the associated project can use the configured embedding model. |
-| Gemini quota or rate-limit failure | Check the Gemini project's quota and billing status before retrying manually. The application does not retry automatically. |
-| Unsupported document | Supply a readable PDF or DOCX file. Other extensions are rejected before Gemini or database writes. |
-| Document has no extractable text | Use a document containing embedded text. OCR and image-only scanned PDFs are not supported. |
-| No indexed results found | This is a successful empty search with exit code `0`. Initialize the schema and index content with the selected strategy if results were expected. |
-| Reset is unavailable | `reset --yes` exits with code `1` and does not change the database. |
+## Known Limitations
 
-Run the same lint, formatting, and coverage gates used by CI with:
+- OCR is not supported. Scanned or image-only PDFs require embedded text before
+  this application can index them.
+- PDF extraction uses `pypdf`; visual layout is not fully preserved.
+- PDF paragraph identification depends on paragraph separators preserved in the
+  extracted text. Visually separate paragraphs may be merged when a PDF does not
+  expose a reliable blank-line boundary.
+- Password-protected PDFs are not supported.
+- Sentence detection uses an English spaCy Sentencizer and is configured for
+  English documents.
+- Fixed-size limits and overlap are measured in Python characters, not tokens.
+- Semantic search is scoped to exactly one chunking strategy at a time.
+- PostgreSQL may use the approximate HNSW index; retrieval has no relevance
+  threshold.
+- The application retrieves matching chunks but does not generate a final
+  answer.
+- Source identity uses only filename basename and strategy, not source directory.
+- Destructive index reset is not implemented through the application.
+- Removing the Compose volume deletes all locally indexed rows and all other
+  PostgreSQL state in that volume.
+- Integration tests truncate the complete `public.chunks` table and must run only
+  against an explicitly disposable test database.
 
-```bash
-python -m ruff check .
-python -m ruff format --check .
-python -m coverage erase
-python -m coverage run --source=rag_app -m pytest tests/unit
-python -m coverage run --append --source=rag_app -m pytest tests/integration
-python -m coverage report --fail-under=80
-```
+## Data Cleanup and Reset Behavior
 
-The unit suite removes ambient Gemini credentials and rejects real Gemini client
-construction. Integration tests require a disposable PostgreSQL database whose
-name ends in `_test`; they truncate test rows before and after every test. CI
-also runs checksum-pinned Gitleaks 8.30.1 against the current tree and every
-reachable regular and merge-commit diff with redacted output.
+Normal operations have limited effects:
 
-## Architecture
+- `docker compose down` removes the service container and network but preserves
+  the named PostgreSQL volume and indexed rows.
+- Search is read-only.
+- Duplicate indexing performs no write.
+- Changed-content indexing atomically replaces only rows with the same source
+  filename basename and strategy; failure preserves the previous version.
+- `python -m rag_app.cli reset --yes` exits with an unavailable-feature error and
+  changes no data.
 
-- `rag_app/extractors`: implemented validation and structured PDF/DOCX text
-  extraction.
-- `rag_app/processing`: implemented shared cleaning and all three bounded,
-  page-aware chunking strategies.
-- `rag_app/embeddings`: implemented Gemini document and retrieval-query
-  requests, strict response validation, safe provider errors, and shared L2
-  normalization.
-- `rag_app/database`: implemented PostgreSQL connection, schema, readiness,
-  atomic document persistence, and read-only pgvector cosine search.
-- `rag_app/services`: complete indexing and semantic-search orchestration.
-- `rag_app/cli.py`: argument handling and user-facing command output only.
+Destructive operations are separate:
 
-See [`docs/architecture-decisions.md`](docs/architecture-decisions.md) for the
-approved implementation decisions.
+- `docker compose down --volumes --remove-orphans` permanently deletes the
+  current Compose project's complete local PostgreSQL volume.
+- Integration tests truncate every row in `public.chunks` on their configured
+  test database before and after each test.
 
-## Example Document
-
-Future demonstrations will use the English Bitcoin Whitepaper. Download it from
-the [Bitcoin project website](https://bitcoin.org/bitcoin.pdf) and place it in
-`data/input/`; the PDF is not committed to this repository.
+Always verify the Compose project and database target before either destructive
+operation. There is no application command that selectively or globally resets
+the index.
