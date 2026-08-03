@@ -88,3 +88,28 @@ class IndexingResult:
     chunking_strategy: ChunkingStrategy
     chunk_count: int
     elapsed_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class SearchMatch:
+    """One validated ranked semantic-search match."""
+
+    rank: int
+    content: str
+    source_file: str
+    source_type: SourceType
+    chunk_index: int
+    chunking_strategy: ChunkingStrategy
+    page_number: int | None
+    distance: float
+    score: float
+
+
+@dataclass(frozen=True, slots=True)
+class SearchResponse:
+    """Immutable result of one complete semantic-search operation."""
+
+    query: str
+    chunking_strategy: ChunkingStrategy
+    top_k: int
+    matches: tuple[SearchMatch, ...]

@@ -5,12 +5,12 @@ content with Gemini embeddings and PostgreSQL/pgvector semantic search.
 
 ## Status
 
-Stage 5 provides a functional, synchronous indexing workflow for PDF and DOCX
-documents. It connects path validation, exact-byte SHA-256 hashing, extraction,
-the `fixed`, `sentence`, and `paragraph` chunking strategies, Gemini document
-embeddings, and atomic PostgreSQL/pgvector persistence. Duplicate content is
-skipped and changed content is replaced within the documented filename and
-strategy scope. Semantic search and index reset are not implemented yet.
+Stage 6 provides functional, synchronous document indexing and semantic search
+for PDF and DOCX content. Search creates a Gemini retrieval-query embedding and
+returns the nearest PostgreSQL/pgvector chunks within the selected `fixed`,
+`sentence`, or `paragraph` strategy. Duplicate indexing is skipped and changed
+content is atomically replaced within the documented filename and strategy
+scope. Generated answers and index reset are not implemented.
 
 ## Runtime
 
@@ -69,9 +69,9 @@ embedding layer requires `EMBEDDING_MODEL=gemini-embedding-001` and
 `EMBEDDING_DIMENSION=768`, and rejects other non-empty model values or other
 dimensions. Database-only operations do not require the Gemini key.
 
-Indexing requires both a reachable PostgreSQL database with the canonical
-schema and a valid Gemini key. Automated tests inject Gemini fakes and neither
-need nor use a real key.
+Indexing and semantic search require both a reachable PostgreSQL database with
+the canonical schema and a valid Gemini key. Automated tests inject Gemini
+fakes and neither need nor use a real key.
 
 ## Document Extraction
 
@@ -252,6 +252,51 @@ If Gemini fails or returns any invalid embedding, a new document writes no
 rows, and an existing version awaiting replacement remains unchanged. Gemini
 never produces partial persisted document data.
 
+## Semantic Search
+
+Before searching, configure `.env`, start PostgreSQL, initialize and verify the
+canonical schema, and index at least one document with the strategy to search.
+Set a valid `GEMINI_API_KEY`, then use either the assignment-compatible entry
+point:
+
+```bash
+python search.py --query "What is proof of work?" --strategy fixed
+```
+
+or the equivalent unified CLI command:
+
+```bash
+python -m rag_app.cli search \
+  --query "What is proof of work?" \
+  --strategy paragraph \
+  --top-k 10
+```
+
+Search trims and validates the query, then embeds it with exactly
+`gemini-embedding-001`, the `RETRIEVAL_QUERY` task type, and 768 output
+dimensions. Query requests contain no retrieval title. The returned vector is
+strictly validated and L2-normalized using the same numerical boundary as
+document embeddings.
+
+Retrieval executes a read-only SQL `SELECT` against `public.chunks`, filters by
+the selected chunking strategy, orders by pgvector cosine distance with `<=>`,
+and applies the requested result limit. The default `top_k` is `5`; pass a
+positive `--top-k` value to override it. Results are ordered nearest first and
+show chunk content, rank, `source_file`, `source_type`, `chunk_index`, strategy,
+PDF page number when available, and a similarity score calculated as
+`1 - cosine_distance`.
+
+Higher scores indicate greater cosine similarity. Search is limited to the
+selected strategy and returns stored chunks, not generated answers. It never
+loads stored vectors or document hashes into the CLI result.
+
+No relevance threshold is applied. If indexed chunks exist for the selected
+strategy, search returns the nearest neighbors even when they are irrelevant to
+the query; callers must interpret the score accordingly. If no rows exist for
+the strategy, the command prints an empty-result message and exits successfully
+with status code `0`. Search does not insert, update, or delete indexed data and
+does not generate a synthesized answer.
+
 ## Tests
 
 Unit tests do not require a running database:
@@ -294,12 +339,22 @@ python -m pytest tests/unit/test_document_hashing.py \
   tests/unit/test_chunk_persistence.py
 ```
 
+Run the Stage 6 unit tests with:
+
+```bash
+python -m pytest tests/unit/test_query_embeddings.py \
+  tests/unit/test_search_validation.py \
+  tests/unit/test_search_service.py \
+  tests/unit/test_semantic_search_repository.py \
+  tests/unit/test_search_cli.py
+```
+
 These tests use constructed documents, small synthetic fixtures, and injected
-Gemini fakes. Automated tests do not download documents or spaCy models, require
-Gemini credentials, or contact Gemini. CI uses no Gemini key and all Gemini
-responses and failures are mocked. CI uses pytest discovery for the complete
-unit and integration test directories, so new Stage 5 tests do not require a
-manually maintained test-file list.
+Gemini fakes. Automated document and query embedding tests do not download
+documents or spaCy models, require Gemini credentials, or contact Gemini. CI
+uses no Gemini key and all Gemini responses and failures are mocked. CI uses
+pytest discovery for the complete unit and integration test directories, so
+new Stage 6 tests do not require a manually maintained test-file list.
 
 Database integration tests require the healthy Compose service and a matching
 `POSTGRES_URL` in `.env`:
@@ -308,35 +363,35 @@ Database integration tests require the healthy Compose service and a matching
 docker compose up --detach --wait postgres
 python -m rag_app.cli database-init
 python -m pytest tests/integration/test_database_setup.py \
-  tests/integration/test_indexing_persistence.py
+  tests/integration/test_indexing_persistence.py \
+  tests/integration/test_semantic_search.py
 ```
 
 ## Commands
 
-The assignment-compatible indexing entry point is functional:
+The assignment-compatible indexing and search entry points are functional:
 
 ```bash
 python index_documents.py --file data/input/document.pdf --strategy fixed
+python search.py --query "What is proof of work?" --strategy fixed --top-k 5
 ```
 
-The unified indexing command is also functional:
+The corresponding unified commands are also functional:
 
 ```bash
 python -m rag_app.cli index --file data/input/document.pdf --strategy fixed
+python -m rag_app.cli search --query "What is proof of work?" --strategy paragraph --top-k 5
 ```
 
-The following search and reset entry points expose help and validate their
-arguments, but their application functionality remains unavailable:
+The reset entry point exposes help and validates explicit confirmation, but its
+application functionality remains unavailable:
 
 ```bash
-python search.py --query "What is proof of work?" --strategy fixed --top-k 5
-python -m rag_app.cli search --query "What is proof of work?" --strategy paragraph --top-k 5
 python -m rag_app.cli reset --yes
 ```
 
-Query embedding, semantic retrieval, and destructive index reset are not
-implemented. `database-init` and `database-check` remain functional database
-commands.
+Generated answers and destructive index reset are not implemented.
+`database-init` and `database-check` remain functional database commands.
 
 ## Architecture
 
@@ -344,12 +399,12 @@ commands.
   extraction.
 - `rag_app/processing`: implemented shared cleaning and all three bounded,
   page-aware chunking strategies.
-- `rag_app/embeddings`: implemented Gemini document requests, strict response
-  validation, safe provider errors, and shared L2 normalization.
-- `rag_app/database`: implemented PostgreSQL connection, schema, readiness, and
-  atomic document persistence; vector search remains planned.
-- `rag_app/services`: complete indexing orchestration and the unavailable future
-  search boundary.
+- `rag_app/embeddings`: implemented Gemini document and retrieval-query
+  requests, strict response validation, safe provider errors, and shared L2
+  normalization.
+- `rag_app/database`: implemented PostgreSQL connection, schema, readiness,
+  atomic document persistence, and read-only pgvector cosine search.
+- `rag_app/services`: complete indexing and semantic-search orchestration.
 - `rag_app/cli.py`: argument handling and user-facing command output only.
 
 See [`docs/architecture-decisions.md`](docs/architecture-decisions.md) for the

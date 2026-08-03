@@ -182,3 +182,26 @@ later stages add resolved implementation details without removing them.
 129. Return an immutable safe indexing summary containing indexed, replaced, or skipped status, source basename, canonical strategy, chunk count, and elapsed seconds, without content, vectors, credentials, or local paths.
 130. Keep search, query embedding, semantic result construction, and destructive reset outside Stage 5.
 131. Return process exit code zero for indexed, replaced, and skipped outcomes, code one for expected runtime failures, and retain Typer's code two for usage errors.
+
+## Stage 6 Semantic Search Implementation
+
+132. Make the root-level `search.py` wrapper and unified `search` command functional while leaving generated answers and destructive index reset unavailable.
+133. Run semantic search synchronously through query, strategy, and `top_k` validation, database readiness verification, Gemini query embedding, read-only pgvector retrieval, and result validation.
+134. Embed exactly one canonical query with `gemini-embedding-001`, `output_dimensionality=768`, and the `RETRIEVAL_QUERY` task type, without setting a retrieval title.
+135. Apply the shared strict vector validation and manual L2 normalization to query embeddings before retrieval.
+136. Execute semantic retrieval with a read-only SQL `SELECT` from `public.chunks`, filter by canonical `chunking_strategy`, order nearest first with pgvector's cosine-distance operator `<=>`, and limit results to `top_k`.
+137. Default `top_k` to five and permit any positive integer override from the application or `--top-k` CLI option.
+138. Calculate each displayed similarity score as `1 - cosine_distance` without replacing or hiding the underlying distance in the application result.
+139. Return ordered immutable matches containing rank, chunk content, source filename, source type, chunk index, chunking strategy, optional page number, cosine distance, and similarity score.
+140. Apply no relevance threshold or post-retrieval filtering; when strategy-scoped rows exist, return their nearest neighbors even if their semantic relevance is poor.
+141. Treat no rows for the selected strategy as a successful empty search, print an explicit empty-result message, and exit with process code zero.
+142. Keep search read-only: do not insert, update, delete, or otherwise mutate indexed content during query embedding or retrieval.
+143. Return retrieved source chunks and metadata only; do not generate, synthesize, or claim to provide an answer to the query.
+144. Mock Gemini query embedding responses and failures in automated tests, require no Gemini credentials in CI, and continue running PostgreSQL/pgvector integration tests.
+145. Make exactly one synchronous Gemini query-embedding request per search, submit only the canonical query text, and add no strategy, result count, instruction, filename, or other metadata to that text.
+146. Parameterize the query vector, canonical strategy, and `top_k` in SQL while retaining the index-compatible `ORDER BY embedding <=> query_vector` followed by `LIMIT top_k` structure.
+147. Preserve one-based PDF page numbers and null DOCX page numbers in ranked responses, and keep embeddings, document hashes, and database identifiers internal.
+148. Accept only finite cosine distances within an explicit `1e-9` tolerance around the theoretical zero-to-two range, calculate the unrounded score without clamping, and reject clearly invalid repository values.
+149. Keep full query text, retrieved chunk content, vectors, credentials, raw provider responses, raw database rows, and document hashes out of application logs; log search metadata only.
+150. Return process exit code zero for both populated and empty searches, code one for expected runtime failures, and retain Typer's code two for usage errors.
+151. Enable pgvector's transaction-local strict HNSW iterative scan before retrieval so strategy filtering can continue scanning approximate candidates toward the requested `top_k` without changing the index-compatible query order.

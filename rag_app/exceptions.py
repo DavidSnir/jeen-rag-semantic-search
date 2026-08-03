@@ -89,6 +89,18 @@ class DuplicateStateInconsistencyError(IndexingPipelineError):
     """Raised when stored document-version state cannot be interpreted safely."""
 
 
+class SearchError(RagAppError):
+    """Base class for expected semantic-search failures."""
+
+
+class SearchValidationError(SearchError):
+    """Raised when application-level search arguments are invalid."""
+
+
+class SearchPipelineError(SearchError):
+    """Raised when search stages return incompatible application state."""
+
+
 class DatabaseError(RagAppError):
     """Base class for expected database failures."""
 
@@ -103,6 +115,10 @@ class DatabaseSchemaError(DatabaseError):
 
 class DatabaseOperationError(DatabaseError):
     """Raised when an established connection cannot complete an operation."""
+
+
+class SemanticSearchError(DatabaseOperationError):
+    """Raised when a semantic-search query cannot complete safely."""
 
 
 class PersistenceError(DatabaseError):
