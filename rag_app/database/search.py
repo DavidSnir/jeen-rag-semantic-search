@@ -1,11 +1,12 @@
 """Read-only PostgreSQL/pgvector semantic-search repository."""
 
 import math
+from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any
 
 import psycopg
 from pgvector import Vector
+from psycopg import Connection
 
 from rag_app.config import EMBEDDING_DIMENSION
 from rag_app.database.connection import open_database_connection
@@ -46,7 +47,7 @@ def search_similar_chunks(
     strategy: ChunkingStrategy,
     top_k: int,
 ) -> tuple[SemanticSearchRow, ...]:
-    """Return strategy-scoped rows in ascending cosine-distance order."""
+    """Return ordered strategy rows, rolling back the query transaction."""
     _validate_repository_input(query_vector, strategy, top_k)
     vector = Vector(list(query_vector))
 
@@ -66,9 +67,7 @@ def search_similar_chunks(
             raise
         except psycopg.Error as error:
             _rollback_quietly(connection)
-            raise SemanticSearchError(
-                "Semantic search query failed."
-            ) from error
+            raise SemanticSearchError("Semantic search query failed.") from error
         except Exception:
             _rollback_quietly(connection)
             raise
@@ -92,9 +91,7 @@ def _validate_repository_input(
         )
     norm = math.hypot(*query_vector)
     if not math.isclose(norm, 1.0, rel_tol=1e-12, abs_tol=1e-12):
-        raise SemanticSearchError(
-            "Semantic search requires a normalized query vector."
-        )
+        raise SemanticSearchError("Semantic search requires a normalized query vector.")
     if not isinstance(strategy, ChunkingStrategy):
         raise SemanticSearchError(
             "Semantic search requires a canonical chunking strategy."
@@ -105,7 +102,7 @@ def _validate_repository_input(
         )
 
 
-def _map_row(row: Any) -> SemanticSearchRow:
+def _map_row(row: tuple[object, ...]) -> SemanticSearchRow:
     try:
         return SemanticSearchRow(*row)
     except (TypeError, ValueError) as error:
@@ -114,11 +111,9 @@ def _map_row(row: Any) -> SemanticSearchRow:
         ) from error
 
 
-def _rollback_quietly(connection: Any) -> None:
-    try:
+def _rollback_quietly(connection: Connection[tuple[object, ...]]) -> None:
+    with suppress(psycopg.Error):
         connection.rollback()
-    except psycopg.Error:
-        pass
 
 
 __all__ = ["SemanticSearchRow", "search_similar_chunks"]

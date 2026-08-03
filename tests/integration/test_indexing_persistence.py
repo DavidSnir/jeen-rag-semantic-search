@@ -1,22 +1,21 @@
 """Stage 5 integration tests for transactional PostgreSQL chunk persistence."""
 
-import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from uuid import uuid4
+from typing import Any, Protocol
 
-import pytest
 import psycopg
-from dotenv import load_dotenv
+import pytest
+from pgvector import Vector
 
 import rag_app.database.repository as repository
 from rag_app.database.connection import open_database_connection
 from rag_app.database.repository import (
+    PersistenceResult,
     _document_lock_key,
     get_indexed_document_state,
-    initialize_schema,
     persist_embedded_document,
 )
 from rag_app.documents import (
@@ -28,39 +27,23 @@ from rag_app.documents import (
 )
 from rag_app.exceptions import PersistenceError
 
-load_dotenv()
-
-pytestmark = pytest.mark.skipif(
-    not os.getenv("POSTGRES_URL"),
-    reason="POSTGRES_URL is required for PostgreSQL integration tests",
-)
-
 _VECTOR_DIMENSION = 768
+type _StoredRow = tuple[
+    int,
+    str,
+    Vector,
+    str,
+    str,
+    str,
+    int,
+    str,
+    int | None,
+    datetime,
+]
 
 
-@pytest.fixture(scope="module", autouse=True)
-def _initialized_schema() -> None:
-    initialize_schema()
-
-
-@pytest.fixture
-def unique_source_file():
-    source_files: set[str] = set()
-
-    def create(label: str, suffix: str = ".pdf") -> str:
-        source_file = f"stage-5-{label}-{uuid4().hex}{suffix}"
-        source_files.add(source_file)
-        return source_file
-
-    yield create
-
-    if source_files:
-        with open_database_connection() as connection:
-            connection.execute(
-                "DELETE FROM public.chunks WHERE source_file = ANY(%s)",
-                (list(source_files),),
-            )
-            connection.commit()
+class _SourceFileFactory(Protocol):
+    def __call__(self, label: str, suffix: str = ".pdf") -> str: ...
 
 
 def _normalized_vector(position: int) -> tuple[float, ...]:
@@ -95,7 +78,7 @@ def _embedded_document(
     )
 
 
-def _stored_rows(source_file: str, strategy: ChunkingStrategy):
+def _stored_rows(source_file: str, strategy: ChunkingStrategy) -> list[_StoredRow]:
     with open_database_connection() as connection:
         rows = connection.execute(
             """
@@ -113,7 +96,7 @@ def _stored_rows(source_file: str, strategy: ChunkingStrategy):
 
 
 def _assert_rows_match(
-    rows, document: EmbeddedDocument, document_hash: str
+    rows: list[_StoredRow], document: EmbeddedDocument, document_hash: str
 ) -> None:
     assert len(rows) == len(document.chunks)
     assert [row[6] for row in rows] == list(range(len(document.chunks)))
@@ -137,7 +120,7 @@ def _assert_rows_match(
 
 
 def test_multi_chunk_insert_retrieves_every_field_and_vector(
-    unique_source_file,
+    unique_source_file: _SourceFileFactory,
 ) -> None:
     source_file = unique_source_file("multi-chunk")
     document_hash = "a" * 64
@@ -162,7 +145,7 @@ def test_multi_chunk_insert_retrieves_every_field_and_vector(
 
 
 def test_exact_duplicate_is_skipped_without_touching_rows_or_timestamps(
-    unique_source_file,
+    unique_source_file: _SourceFileFactory,
 ) -> None:
     source_file = unique_source_file("duplicate")
     document_hash = "b" * 64
@@ -182,9 +165,7 @@ def test_exact_duplicate_is_skipped_without_touching_rows_or_timestamps(
     assert duplicate_result.status is IndexingStatus.skipped
     assert duplicate_result.chunk_count == len(document.chunks)
     assert len(after) == len(before) == 2
-    assert [(row[0], row[9]) for row in after] == [
-        (row[0], row[9]) for row in before
-    ]
+    assert [(row[0], row[9]) for row in after] == [(row[0], row[9]) for row in before]
     assert after == before
     state = get_indexed_document_state(source_file, ChunkingStrategy.sentence)
     assert state.document_hashes == (document_hash,)
@@ -192,7 +173,7 @@ def test_exact_duplicate_is_skipped_without_touching_rows_or_timestamps(
 
 
 def test_changed_hash_atomically_replaces_the_previous_document(
-    unique_source_file,
+    unique_source_file: _SourceFileFactory,
 ) -> None:
     source_file = unique_source_file("changed-hash")
     old_hash = "c" * 64
@@ -226,25 +207,34 @@ def test_changed_hash_atomically_replaces_the_previous_document(
 
 
 def test_different_chunking_strategies_for_one_filename_coexist(
-    unique_source_file,
+    unique_source_file: _SourceFileFactory,
 ) -> None:
     source_file = unique_source_file("strategies")
     documents = {
-        ChunkingStrategy.fixed: (_embedded_document(
-            source_file, ChunkingStrategy.fixed, ("Fixed one", "Fixed two")
-        ), "1" * 64),
-        ChunkingStrategy.sentence: (_embedded_document(
-            source_file,
-            ChunkingStrategy.sentence,
-            ("Sentence one", "Sentence two", "Sentence three"),
-            vector_offset=10,
-        ), "2" * 64),
-        ChunkingStrategy.paragraph: (_embedded_document(
-            source_file,
-            ChunkingStrategy.paragraph,
-            ("Paragraph only",),
-            vector_offset=20,
-        ), "3" * 64),
+        ChunkingStrategy.fixed: (
+            _embedded_document(
+                source_file, ChunkingStrategy.fixed, ("Fixed one", "Fixed two")
+            ),
+            "1" * 64,
+        ),
+        ChunkingStrategy.sentence: (
+            _embedded_document(
+                source_file,
+                ChunkingStrategy.sentence,
+                ("Sentence one", "Sentence two", "Sentence three"),
+                vector_offset=10,
+            ),
+            "2" * 64,
+        ),
+        ChunkingStrategy.paragraph: (
+            _embedded_document(
+                source_file,
+                ChunkingStrategy.paragraph,
+                ("Paragraph only",),
+                vector_offset=20,
+            ),
+            "3" * 64,
+        ),
     }
 
     for document, document_hash in documents.values():
@@ -259,7 +249,7 @@ def test_different_chunking_strategies_for_one_filename_coexist(
 
 
 def test_identical_hashes_under_different_filenames_coexist(
-    unique_source_file,
+    unique_source_file: _SourceFileFactory,
 ) -> None:
     first_source = unique_source_file("same-hash-first")
     second_source = unique_source_file("same-hash-second")
@@ -288,16 +278,22 @@ def test_identical_hashes_under_different_filenames_coexist(
         second_document,
         document_hash,
     )
-    assert get_indexed_document_state(
-        first_source, ChunkingStrategy.fixed
-    ).total_chunk_count == 1
-    assert get_indexed_document_state(
-        second_source, ChunkingStrategy.fixed
-    ).total_chunk_count == 2
+    assert (
+        get_indexed_document_state(
+            first_source, ChunkingStrategy.fixed
+        ).total_chunk_count
+        == 1
+    )
+    assert (
+        get_indexed_document_state(
+            second_source, ChunkingStrategy.fixed
+        ).total_chunk_count
+        == 2
+    )
 
 
 def test_insertion_failure_after_deletion_rolls_back_the_old_rows(
-    unique_source_file, monkeypatch
+    unique_source_file: _SourceFileFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source_file = unique_source_file("rollback")
     old_hash = "f" * 64
@@ -312,30 +308,40 @@ def test_insertion_failure_after_deletion_rolls_back_the_old_rows(
     replacement = _embedded_document(
         source_file,
         strategy,
-        ("Replacement chunk",),
+        ("Replacement chunk one", "Replacement chunk two"),
         vector_offset=70,
     )
     persist_embedded_document(old_document, old_hash)
     before = _stored_rows(source_file, strategy)
-    rows_seen_after_delete: list[int] = []
+    partial_counts: list[int] = []
+    insertion_error = psycopg.DataError(
+        "forced partial insertion failure with private database detail"
+    )
 
-    def fail_insertion(cursor, _rows) -> None:
-        remaining = cursor.execute(
+    def fail_after_partial_insertion(
+        cursor: psycopg.Cursor[Any],
+        rows: tuple[repository._PersistenceRow, ...],
+    ) -> None:
+        cursor.execute(repository._INSERT_CHUNK_SQL, rows[0])
+        inserted_count = cursor.execute(
             """
             SELECT count(*) FROM public.chunks
             WHERE source_file = %s AND chunking_strategy = %s
             """,
             (source_file, strategy.value),
         ).fetchone()[0]
-        rows_seen_after_delete.append(remaining)
-        raise psycopg.DataError("forced insertion failure")
+        partial_counts.append(inserted_count)
+        raise insertion_error
 
-    monkeypatch.setattr(repository, "_insert_rows", fail_insertion)
+    monkeypatch.setattr(repository, "_insert_rows", fail_after_partial_insertion)
 
-    with pytest.raises(PersistenceError):
+    with pytest.raises(PersistenceError) as caught:
         persist_embedded_document(replacement, new_hash)
 
-    assert rows_seen_after_delete == [0]
+    assert str(caught.value) == "Document persistence failed."
+    assert caught.value.__cause__ is insertion_error
+    assert "private database detail" not in str(caught.value)
+    assert partial_counts == [1]
     assert _stored_rows(source_file, strategy) == before
     state = get_indexed_document_state(source_file, strategy)
     assert state.document_hashes == (old_hash,)
@@ -344,7 +350,7 @@ def test_insertion_failure_after_deletion_rolls_back_the_old_rows(
 
 
 def test_concurrent_writes_leave_one_complete_document_version(
-    unique_source_file,
+    unique_source_file: _SourceFileFactory,
 ) -> None:
     source_file = unique_source_file("concurrent")
     strategy = ChunkingStrategy.fixed
@@ -364,14 +370,14 @@ def test_concurrent_writes_leave_one_complete_document_version(
     )
     barrier = threading.Barrier(2)
 
-    def persist_concurrently(document, document_hash):
+    def persist_concurrently(
+        document: EmbeddedDocument, document_hash: str
+    ) -> PersistenceResult:
         barrier.wait(timeout=10)
         return persist_embedded_document(document, document_hash)
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        first_future = executor.submit(
-            persist_concurrently, first_document, first_hash
-        )
+        first_future = executor.submit(persist_concurrently, first_document, first_hash)
         second_future = executor.submit(
             persist_concurrently, second_document, second_hash
         )
@@ -382,9 +388,7 @@ def test_concurrent_writes_leave_one_complete_document_version(
     stored_hashes = {row[4] for row in rows}
     assert len(stored_hashes) == 1
     final_hash = stored_hashes.pop()
-    expected_document = (
-        first_document if final_hash == first_hash else second_document
-    )
+    expected_document = first_document if final_hash == first_hash else second_document
     assert final_hash in {first_hash, second_hash}
     _assert_rows_match(rows, expected_document, final_hash)
     state = get_indexed_document_state(source_file, strategy)
@@ -393,7 +397,7 @@ def test_concurrent_writes_leave_one_complete_document_version(
 
 
 def test_document_advisory_lock_does_not_block_an_unrelated_source(
-    unique_source_file,
+    unique_source_file: _SourceFileFactory,
 ) -> None:
     locked_source = unique_source_file("locked-source")
     unrelated_source = unique_source_file("unrelated-source")
@@ -412,9 +416,7 @@ def test_document_advisory_lock_does_not_block_an_unrelated_source(
     executor = ThreadPoolExecutor(max_workers=1)
     try:
         with open_database_connection() as lock_connection:
-            lock_connection.execute(
-                "SELECT pg_advisory_xact_lock(%s)", (locked_key,)
-            )
+            lock_connection.execute("SELECT pg_advisory_xact_lock(%s)", (locked_key,))
             future = executor.submit(
                 persist_embedded_document, unrelated_document, document_hash
             )

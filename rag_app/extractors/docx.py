@@ -27,7 +27,14 @@ def extract_docx(path: Path) -> list[tuple[str, None]]:
             if isinstance(block, Table):
                 extracted.extend(_extract_table(block))
         return extracted
-    except (OpcError, BadZipFile, XMLSyntaxError, OSError, KeyError, ValueError) as error:
+    except (
+        OpcError,
+        BadZipFile,
+        XMLSyntaxError,
+        OSError,
+        KeyError,
+        ValueError,
+    ) as error:
         raise DocumentExtractionError(
             f"DOCX text extraction failed for '{path.name}'; "
             "the file may be malformed or unsupported"

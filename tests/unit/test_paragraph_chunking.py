@@ -32,9 +32,7 @@ def _pdf(*pages: tuple[str, int]) -> ExtractedDocument:
 def test_paragraph_single_paragraph_is_retained() -> None:
     result = chunk_document(_docx("One meaningful paragraph."), "paragraph")
 
-    assert [chunk.content for chunk in result.chunks] == [
-        "One meaningful paragraph."
-    ]
+    assert [chunk.content for chunk in result.chunks] == ["One meaningful paragraph."]
 
 
 def test_paragraph_returns_each_short_unit_as_an_independent_chunk() -> None:
@@ -151,9 +149,7 @@ def test_paragraph_oversized_sentence_uses_fixed_overlap() -> None:
 def test_paragraph_fallback_is_not_recombined_with_adjacent_paragraphs() -> None:
     oversized = "z" * 2_000 + "."
 
-    result = chunk_document(
-        _docx("Before.", oversized, "After."), "paragraph"
-    )
+    result = chunk_document(_docx("Before.", oversized, "After."), "paragraph")
 
     assert result.chunks[0].content == "Before."
     assert [len(chunk.content) for chunk in result.chunks[1:3]] == [2_000, 501]
@@ -185,6 +181,9 @@ def test_paragraph_keeps_pdf_pages_separate() -> None:
     ]
     assert [chunk.page_number for chunk in result.chunks] == [2, 5]
     assert [chunk.chunk_index for chunk in result.chunks] == [0, 1]
+    assert result.source_file == "paragraphs.pdf"
+    assert result.source_type == "PDF"
+    assert result.chunking_strategy.value == "paragraph"
 
 
 def test_paragraph_repeated_execution_is_stable_and_preserves_content() -> None:

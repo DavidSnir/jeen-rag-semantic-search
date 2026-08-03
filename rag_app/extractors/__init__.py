@@ -15,7 +15,7 @@ _SOURCE_TYPES: dict[str, SourceType] = {".pdf": "PDF", ".docx": "DOCX"}
 
 def validate_document_path(path: str | Path | None) -> tuple[Path, SourceType]:
     """Validate a document path and return its canonical source type."""
-    if path is None or isinstance(path, str) and not path.strip():
+    if path is None or (isinstance(path, str) and not path.strip()):
         raise InvalidDocumentPathError("A document file path must be supplied")
 
     candidate = Path(path)

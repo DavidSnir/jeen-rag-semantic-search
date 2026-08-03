@@ -37,7 +37,9 @@ def test_sentence_single_sentence_is_retained() -> None:
 
 
 def test_sentence_returns_each_short_sentence_as_an_independent_chunk() -> None:
-    result = chunk_document(_docx("First sentence. Second sentence! Third?"), "sentence")
+    result = chunk_document(
+        _docx("First sentence. Second sentence! Third?"), "sentence"
+    )
 
     assert [chunk.content for chunk in result.chunks] == [
         "First sentence.",
@@ -72,9 +74,7 @@ def test_sentence_normal_chunks_preserve_boundaries_without_overlap() -> None:
 
 
 def test_sentence_preserves_repeated_internal_whitespace() -> None:
-    result = chunk_document(
-        _docx("First   sentence. Second sentence."), "sentence"
-    )
+    result = chunk_document(_docx("First   sentence. Second sentence."), "sentence")
 
     assert [chunk.content for chunk in result.chunks] == [
         "First   sentence.",
@@ -132,9 +132,7 @@ def test_sentence_oversized_sentence_uses_fixed_overlap() -> None:
 def test_sentence_preserves_normal_content_around_oversized_sentence() -> None:
     oversized = "z" * 2_000 + "."
 
-    result = chunk_document(
-        _docx(f"Before. {oversized} After."), "sentence"
-    )
+    result = chunk_document(_docx(f"Before. {oversized} After."), "sentence")
 
     assert result.chunks[0].content == "Before."
     assert [len(chunk.content) for chunk in result.chunks[1:3]] == [2_000, 501]
@@ -156,6 +154,10 @@ def test_sentence_pdf_sentences_preserve_page_numbers_and_order() -> None:
         "First sentence on page two.",
     ]
     assert [chunk.page_number for chunk in result.chunks] == [1, 1, 2]
+    assert [chunk.chunk_index for chunk in result.chunks] == [0, 1, 2]
+    assert result.source_file == "sentences.pdf"
+    assert result.source_type == "PDF"
+    assert result.chunking_strategy.value == "sentence"
 
 
 def test_sentence_docx_keeps_adjacent_units_independent_with_null_pages() -> None:
@@ -222,6 +224,4 @@ def test_unexpected_sentence_programming_error_is_not_converted(
 def test_sentence_repeated_execution_is_stable() -> None:
     document = _docx("First. Second. Third.")
 
-    assert chunk_document(document, "sentence") == chunk_document(
-        document, "sentence"
-    )
+    assert chunk_document(document, "sentence") == chunk_document(document, "sentence")

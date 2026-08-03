@@ -23,73 +23,24 @@ from rag_app.exceptions import (
     InvalidEmbeddingInputError,
     InvalidGeminiResponseError,
 )
+from tests.support.gemini import (
+    FakeClient,
+    OwnedFakeClient,
+)
+from tests.support.gemini import (
+    embedding_response as _response,
+)
+from tests.support.gemini import (
+    embedding_vector as _vector,
+)
 
-SYNTHETIC_KEY = "stage6-recognizable-synthetic-key"
+SYNTHETIC_KEY = "unit-test-placeholder"
 SENSITIVE_QUERY = "private search query must stay out of logs and errors"
-
-
-class FakeModels:
-    def __init__(self, response: object = None, error: Exception | None = None):
-        self.response = response
-        self.error = error
-        self.calls: list[dict[str, object]] = []
-
-    def embed_content(self, **kwargs: object) -> object:
-        self.calls.append(kwargs)
-        if self.error is not None:
-            raise self.error
-        return self.response
-
-
-class FakeClient:
-    def __init__(self, response: object = None, error: Exception | None = None):
-        self.models = FakeModels(response=response, error=error)
-
-
-class OwnedFakeClient(FakeClient):
-    def __init__(
-        self,
-        response: object = None,
-        error: Exception | None = None,
-        close_error: Exception | None = None,
-    ):
-        super().__init__(response=response, error=error)
-        self.close_error = close_error
-        self.close_calls = 0
-
-    def close(self) -> None:
-        self.close_calls += 1
-        if self.close_error is not None:
-            raise self.close_error
-
-
-@pytest.fixture(autouse=True)
-def block_real_gemini_client(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fail_client_creation(**kwargs: object) -> None:
-        raise AssertionError("Query tests must not construct a real Gemini client")
-
-    monkeypatch.setattr(gemini_module.genai, "Client", fail_client_creation)
 
 
 @pytest.fixture
 def settings() -> EmbeddingSettings:
     return EmbeddingSettings(gemini_api_key=SYNTHETIC_KEY)
-
-
-def _vector(
-    first: float = 1.0,
-    second: float = 0.0,
-    *,
-    dimension: int = EMBEDDING_DIMENSION,
-) -> list[float]:
-    values = [first, second, *([0.0] * (EMBEDDING_DIMENSION - 2))]
-    return values[:dimension] if dimension <= EMBEDDING_DIMENSION else values + [0.0]
-
-
-def _response(*vectors: object) -> SimpleNamespace:
-    return SimpleNamespace(
-        embeddings=[SimpleNamespace(values=vector) for vector in vectors]
-    )
 
 
 @pytest.mark.parametrize(
@@ -220,7 +171,9 @@ def test_missing_query_vector_values_field_is_rejected(
 ) -> None:
     client = FakeClient(SimpleNamespace(embeddings=[SimpleNamespace()]))
 
-    with pytest.raises(InvalidGeminiResponseError, match="values are missing for query"):
+    with pytest.raises(
+        InvalidGeminiResponseError, match="values are missing for query"
+    ):
         embed_query("valid query", settings, client=client)
 
 
@@ -339,9 +292,7 @@ def test_cleanup_failure_does_not_expose_secrets_or_hide_result(
 ) -> None:
     client = OwnedFakeClient(
         _response(_vector()),
-        close_error=httpx.TransportError(
-            f"cleanup {SYNTHETIC_KEY} {SENSITIVE_QUERY}"
-        ),
+        close_error=httpx.TransportError(f"cleanup {SYNTHETIC_KEY} {SENSITIVE_QUERY}"),
     )
     monkeypatch.setattr(gemini_module.genai, "Client", lambda **kwargs: client)
 
@@ -370,9 +321,10 @@ def test_client_creation_failure_is_safe_and_chained(
 
     monkeypatch.setattr(gemini_module.genai, "Client", fail_client_creation)
 
-    with caplog.at_level(logging.INFO), pytest.raises(
-        EmbeddingConfigurationError
-    ) as raised:
+    with (
+        caplog.at_level(logging.INFO),
+        pytest.raises(EmbeddingConfigurationError) as raised,
+    ):
         embed_query(SENSITIVE_QUERY, settings)
 
     assert raised.value.__cause__ is original
@@ -493,9 +445,7 @@ def test_api_key_invalid_reason_is_classified_as_authentication_failure(
         embed_query(SENSITIVE_QUERY, settings, client=client)
 
     assert raised.value.__cause__ is original
-    assert str(raised.value) == (
-        "Gemini authentication failed. Check GEMINI_API_KEY."
-    )
+    assert str(raised.value) == ("Gemini authentication failed. Check GEMINI_API_KEY.")
     public_output = str(raised.value) + caplog.text
     assert SYNTHETIC_KEY not in public_output
     assert SENSITIVE_QUERY not in public_output
@@ -535,7 +485,10 @@ def test_invalid_query_embedding_logs_only_safe_validation_metadata(
 ) -> None:
     client = FakeClient(_response(_vector(dimension=767)))
 
-    with caplog.at_level(logging.INFO), pytest.raises(EmbeddingDimensionError) as raised:
+    with (
+        caplog.at_level(logging.INFO),
+        pytest.raises(EmbeddingDimensionError) as raised,
+    ):
         embed_query(SENSITIVE_QUERY, settings, client=client)
 
     assert "category=dimension-mismatch" in caplog.text

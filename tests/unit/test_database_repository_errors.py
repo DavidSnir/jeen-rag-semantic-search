@@ -1,7 +1,7 @@
 """Failure-path tests for schema initialization and readiness checks."""
 
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
 
 import psycopg
 import pytest
@@ -36,9 +36,7 @@ class _Connection:
         self.rollbacks += 1
 
 
-def _use_connection(
-    monkeypatch: pytest.MonkeyPatch, connection: _Connection
-) -> None:
+def _use_connection(monkeypatch: pytest.MonkeyPatch, connection: _Connection) -> None:
     @contextmanager
     def open_connection(
         *, register_vector_types_on_open: bool = True

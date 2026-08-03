@@ -1,7 +1,6 @@
 services:
   postgres:
     image: pgvector/pgvector:0.8.2-pg17-bookworm
-    container_name: jeen-rag-postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB must be set}
@@ -23,4 +22,3 @@ services:
 
 volumes:
   postgres_data:
-    name: jeen-rag-postgres-data

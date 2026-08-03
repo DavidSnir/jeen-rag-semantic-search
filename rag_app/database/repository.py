@@ -4,18 +4,26 @@ import hashlib
 import logging
 import math
 import re
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
-from typing import Any
 
 import psycopg
 from pgvector import Vector
-from psycopg import Connection
+from psycopg import Connection, Cursor
 
 from rag_app.config import EMBEDDING_DIMENSION
 from rag_app.database.connection import (
     open_database_connection,
     register_vector_types,
+)
+from rag_app.documents import (
+    Chunk,
+    ChunkingStrategy,
+    EmbeddedChunk,
+    EmbeddedDocument,
+    IndexingStatus,
+    SourceType,
 )
 from rag_app.exceptions import (
     DatabaseOperationError,
@@ -24,13 +32,6 @@ from rag_app.exceptions import (
     PersistenceError,
     PersistenceVerificationError,
     RagAppError,
-)
-from rag_app.documents import (
-    Chunk,
-    ChunkingStrategy,
-    EmbeddedChunk,
-    EmbeddedDocument,
-    IndexingStatus,
 )
 from rag_app.processing.chunking import MAX_CHUNK_SIZE
 
@@ -157,13 +158,16 @@ class IndexedDocumentState:
 
     @property
     def document_hashes(self) -> tuple[str, ...]:
+        """Return stored document hashes in deterministic order."""
         return tuple(version.document_hash for version in self.versions)
 
     @property
     def total_chunk_count(self) -> int:
+        """Return the chunk count across all stored versions."""
         return sum(version.chunk_count for version in self.versions)
 
     def chunk_count_for(self, document_hash: str) -> int | None:
+        """Return the stored chunk count for a hash, if present."""
         for version in self.versions:
             if version.document_hash == document_hash:
                 return version.chunk_count
@@ -183,7 +187,7 @@ class _SchemaMismatchError(Exception):
 
 
 def initialize_schema() -> DatabaseStatus:
-    """Apply the canonical schema atomically and validate the result."""
+    """Apply, validate, and commit the canonical schema as one transaction."""
     try:
         schema = SCHEMA_PATH.read_text(encoding="utf-8")
     except OSError as error:
@@ -216,7 +220,7 @@ def initialize_schema() -> DatabaseStatus:
 
 
 def check_database_readiness() -> DatabaseStatus:
-    """Verify connectivity and every required Stage 1 database object."""
+    """Verify required database objects, then roll back the inspection."""
     with open_database_connection(register_vector_types_on_open=False) as connection:
         try:
             if connection.execute("SELECT 1").fetchone() != (1,):
@@ -236,9 +240,7 @@ def check_database_readiness() -> DatabaseStatus:
             raise
         except psycopg.Error as error:
             _rollback_quietly(connection)
-            raise DatabaseOperationError(
-                "Database readiness check failed."
-            ) from error
+            raise DatabaseOperationError("Database readiness check failed.") from error
         except Exception:
             _rollback_quietly(connection)
             raise
@@ -247,7 +249,7 @@ def check_database_readiness() -> DatabaseStatus:
 def get_indexed_document_state(
     source_file: str, strategy: ChunkingStrategy
 ) -> IndexedDocumentState:
-    """Read hashes and chunk counts for one logical document strategy."""
+    """Read one document's stored versions, then roll back the transaction."""
     _validate_identity(source_file, strategy)
 
     with open_database_connection() as connection:
@@ -272,7 +274,7 @@ def get_indexed_document_state(
 def persist_embedded_document(
     document: EmbeddedDocument, document_hash: str
 ) -> PersistenceResult:
-    """Insert or atomically replace one complete embedded document."""
+    """Commit one complete insert or replacement, rolling back on failure."""
     _validate_embedded_document(document, document_hash)
     rows = _build_persistence_rows(document, document_hash)
     expected_count = len(document.chunks)
@@ -286,7 +288,11 @@ def persist_embedded_document(
             with connection.cursor() as cursor:
                 cursor.execute(
                     "SELECT pg_advisory_xact_lock(%s)",
-                    (_document_lock_key(document.source_file, document.chunking_strategy),),
+                    (
+                        _document_lock_key(
+                            document.source_file, document.chunking_strategy
+                        ),
+                    ),
                 )
                 state = _read_indexed_document_state(
                     cursor, document.source_file, document.chunking_strategy
@@ -345,9 +351,7 @@ def _validate_identity(source_file: str, strategy: ChunkingStrategy) -> None:
         raise PersistenceError("Persistence requires a canonical chunking strategy.")
 
 
-def _validate_embedded_document(
-    document: EmbeddedDocument, document_hash: str
-) -> None:
+def _validate_embedded_document(document: EmbeddedDocument, document_hash: str) -> None:
     if not isinstance(document, EmbeddedDocument):
         raise PersistenceError("Persistence input must be an EmbeddedDocument.")
     _validate_identity(document.source_file, document.chunking_strategy)
@@ -371,13 +375,11 @@ def _validate_embedded_document(
         )
 
     for expected_index, embedded_chunk in enumerate(document.chunks):
-        _validate_embedded_chunk(
-            embedded_chunk, expected_index, document.source_type
-        )
+        _validate_embedded_chunk(embedded_chunk, expected_index, document.source_type)
 
 
 def _validate_embedded_chunk(
-    embedded_chunk: EmbeddedChunk, expected_index: int, source_type: str
+    embedded_chunk: EmbeddedChunk, expected_index: int, source_type: SourceType
 ) -> None:
     if not isinstance(embedded_chunk, EmbeddedChunk) or not isinstance(
         embedded_chunk.chunk, Chunk
@@ -429,9 +431,7 @@ def _validate_embedded_chunk(
             f"Persistence embedding {expected_index} contains an invalid value."
         )
     norm = math.hypot(*vector)
-    if norm == 0.0 or not math.isclose(
-        norm, 1.0, rel_tol=1e-12, abs_tol=1e-12
-    ):
+    if norm == 0.0 or not math.isclose(norm, 1.0, rel_tol=1e-12, abs_tol=1e-12):
         raise PersistenceError(
             f"Persistence embedding {expected_index} is not normalized."
         )
@@ -442,8 +442,7 @@ def _is_safe_basename(source_file: object) -> bool:
         isinstance(source_file, str)
         and bool(source_file.strip())
         and not any(
-            ord(character) < 32 or ord(character) == 127
-            for character in source_file
+            ord(character) < 32 or ord(character) == 127 for character in source_file
         )
         and source_file not in {".", ".."}
         and Path(source_file).name == source_file
@@ -470,7 +469,9 @@ def _build_persistence_rows(
 
 
 def _read_indexed_document_state(
-    cursor: Any, source_file: str, strategy: ChunkingStrategy
+    cursor: Cursor[tuple[object, ...]],
+    source_file: str,
+    strategy: ChunkingStrategy,
 ) -> IndexedDocumentState:
     rows = cursor.execute(
         """
@@ -520,7 +521,9 @@ def _read_indexed_document_state(
     return state
 
 
-def _insert_rows(cursor: Any, rows: tuple[_PersistenceRow, ...]) -> None:
+def _insert_rows(
+    cursor: Cursor[tuple[object, ...]], rows: tuple[_PersistenceRow, ...]
+) -> None:
     copy_method = getattr(cursor, "copy", None)
     if not callable(copy_method):
         cursor.executemany(_INSERT_CHUNK_SQL, rows)
@@ -532,7 +535,7 @@ def _insert_rows(cursor: Any, rows: tuple[_PersistenceRow, ...]) -> None:
 
 
 def _verify_persisted_document(
-    cursor: Any,
+    cursor: Cursor[tuple[object, ...]],
     source_file: str,
     strategy: ChunkingStrategy,
     document_hash: str,
@@ -558,12 +561,14 @@ def _verify_persisted_document(
 
 
 def _document_lock_key(source_file: str, strategy: ChunkingStrategy) -> int:
-    identity = f"{len(source_file)}:{source_file}:{strategy.value}".encode("utf-8")
+    identity = f"{len(source_file)}:{source_file}:{strategy.value}".encode()
     digest = hashlib.sha256(identity).digest()
     return int.from_bytes(digest[:8], byteorder="big", signed=True)
 
 
-def _inspect_schema(connection: Connection[Any]) -> DatabaseStatus:
+def _inspect_schema(
+    connection: Connection[tuple[object, ...]],
+) -> DatabaseStatus:
     postgresql_version, server_version_num = connection.execute(
         """
         SELECT current_setting('server_version'),
@@ -580,9 +585,7 @@ def _inspect_schema(connection: Connection[Any]) -> DatabaseStatus:
     if extension_row is None:
         raise _SchemaMismatchError("the vector extension is not installed")
     if extension_row[0] != EXPECTED_PGVECTOR_VERSION:
-        raise _SchemaMismatchError(
-            f"pgvector {EXPECTED_PGVECTOR_VERSION} is required"
-        )
+        raise _SchemaMismatchError(f"pgvector {EXPECTED_PGVECTOR_VERSION} is required")
 
     relation_row = connection.execute(
         """
@@ -775,8 +778,6 @@ def _normalize_sql(value: str) -> str:
     return re.sub(r"[\s\"]+", "", value).lower()
 
 
-def _rollback_quietly(connection: Connection[Any]) -> None:
-    try:
+def _rollback_quietly(connection: Connection[tuple[object, ...]]) -> None:
+    with suppress(psycopg.Error):
         connection.rollback()
-    except psycopg.Error:
-        pass

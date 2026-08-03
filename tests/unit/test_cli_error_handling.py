@@ -16,7 +16,6 @@ from rag_app.exceptions import (
     GeminiRequestError,
 )
 
-
 RUNNER = CliRunner()
 STATUS = DatabaseStatus("17.5", "0.8.2", "vector(768)")
 

@@ -21,9 +21,7 @@ from rag_app.services.search import validate_search_query, validate_top_k
         ("東京 café", "東京 café"),
     ],
 )
-def test_query_validation_preserves_meaningful_text(
-    query: str, expected: str
-) -> None:
+def test_query_validation_preserves_meaningful_text(query: str, expected: str) -> None:
     assert validate_search_query(query) == expected
 
 

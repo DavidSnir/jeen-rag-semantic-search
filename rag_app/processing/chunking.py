@@ -6,8 +6,8 @@ fallback only for an oversized individual unit. Overlap belongs only to fixed
 splitting, including the oversized-sentence fallback.
 """
 
-from functools import cache
 import re
+from functools import cache
 from typing import TYPE_CHECKING
 
 from rag_app.documents import (
@@ -50,8 +50,7 @@ def validate_chunking_strategy(
         return ChunkingStrategy(normalized)
     except ValueError as error:
         raise InvalidChunkingStrategyError(
-            "Unsupported chunking strategy. "
-            f"Use one of: {_SUPPORTED_STRATEGIES}."
+            f"Unsupported chunking strategy. Use one of: {_SUPPORTED_STRATEGIES}."
         ) from error
 
 
@@ -103,18 +102,43 @@ def chunk_document(
 
 
 def _validate_document(document: ExtractedDocument) -> None:
+    if not isinstance(document, ExtractedDocument):
+        raise InvalidChunkingInputError("Chunking input must be an extracted document")
+    if not isinstance(document.source_file, str) or not document.source_file.strip():
+        raise InvalidChunkingInputError(
+            "Extracted document must contain a source filename"
+        )
+    if not isinstance(document.source_type, str) or document.source_type not in {
+        "PDF",
+        "DOCX",
+    }:
+        raise InvalidChunkingInputError(
+            "Unsupported extracted source type; expected PDF or DOCX"
+        )
+    if not isinstance(document.units, tuple):
+        raise InvalidChunkingInputError(
+            "Extracted document text units must be an ordered tuple"
+        )
     if not document.units:
         raise InvalidChunkingInputError(
             "Extracted document must contain at least one text unit"
         )
-    if document.source_type not in {"PDF", "DOCX"}:
-        raise InvalidChunkingInputError(
-            f"Unsupported extracted source type '{document.source_type}'"
-        )
 
-    for unit in document.units:
+    for expected_position, unit in enumerate(document.units):
+        if not isinstance(unit, ExtractedTextUnit):
+            raise InvalidChunkingInputError(
+                "Extracted document units must be extracted text units"
+            )
         if not isinstance(unit.text, str):
             raise InvalidChunkingInputError("Extracted text units must contain text")
+        if (
+            not isinstance(unit.position, int)
+            or isinstance(unit.position, bool)
+            or unit.position != expected_position
+        ):
+            raise InvalidChunkingInputError(
+                "Extracted text unit positions must be zero-based and continuous"
+            )
         if document.source_type == "PDF":
             if (
                 not isinstance(unit.page_number, int)

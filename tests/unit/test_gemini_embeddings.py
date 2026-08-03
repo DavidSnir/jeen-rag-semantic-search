@@ -28,59 +28,24 @@ from rag_app.exceptions import (
     InvalidGeminiResponseError,
     RagAppError,
 )
+from tests.support.gemini import (
+    FakeClient,
+    OwnedFakeClient,
+)
+from tests.support.gemini import (
+    embedding_response as _response,
+)
+from tests.support.gemini import (
+    embedding_vector as _vector,
+)
 
-SYNTHETIC_KEY = "stage4-recognizable-synthetic-key"
+SYNTHETIC_KEY = "unit-test-placeholder"
 SENSITIVE_CONTENT = "private chunk content must stay out of provider errors"
-
-
-class FakeModels:
-    def __init__(self, response: object = None, error: Exception | None = None):
-        self.response = response
-        self.error = error
-        self.calls: list[dict[str, object]] = []
-
-    def embed_content(self, **kwargs: object) -> object:
-        self.calls.append(kwargs)
-        if self.error is not None:
-            raise self.error
-        return self.response
-
-
-class FakeClient:
-    def __init__(self, response: object = None, error: Exception | None = None):
-        self.models = FakeModels(response=response, error=error)
-
-
-class OwnedFakeClient(FakeClient):
-    def __init__(self, response: object = None):
-        super().__init__(response=response)
-        self.close_calls = 0
-
-    def close(self) -> None:
-        self.close_calls += 1
-
-
-@pytest.fixture(autouse=True)
-def block_real_gemini_client(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fail_client_creation(**kwargs: object) -> None:
-        raise AssertionError("Automated tests must not construct a real Gemini client")
-
-    monkeypatch.setattr(gemini_module.genai, "Client", fail_client_creation)
 
 
 @pytest.fixture
 def settings() -> EmbeddingSettings:
     return EmbeddingSettings(gemini_api_key=SYNTHETIC_KEY)
-
-
-def _vector(first: float = 1.0, second: float = 0.0) -> list[float]:
-    return [first, second, *([0.0] * (EMBEDDING_DIMENSION - 2))]
-
-
-def _response(*vectors: object) -> SimpleNamespace:
-    return SimpleNamespace(
-        embeddings=[SimpleNamespace(values=vector) for vector in vectors]
-    )
 
 
 def _document(
@@ -161,9 +126,7 @@ def test_production_path_creates_developer_api_client_after_validation(
 
     def create_client(*, api_key: str, vertexai: bool) -> OwnedFakeClient:
         nonlocal received_valid_configuration
-        received_valid_configuration = (
-            api_key == SYNTHETIC_KEY and vertexai is False
-        )
+        received_valid_configuration = api_key == SYNTHETIC_KEY and vertexai is False
         return client
 
     monkeypatch.setattr(gemini_module.genai, "Client", create_client)
@@ -356,7 +319,10 @@ def test_invalid_settings_are_rejected_before_request(
         (SimpleNamespace(), "does not contain embeddings"),
         (SimpleNamespace(embeddings=None), "null embeddings"),
         (SimpleNamespace(embeddings=[]), "no embeddings"),
-        (SimpleNamespace(embeddings="not-a-collection"), "invalid embeddings collection"),
+        (
+            SimpleNamespace(embeddings="not-a-collection"),
+            "invalid embeddings collection",
+        ),
     ],
 )
 def test_missing_embedding_response_data_is_rejected(
@@ -411,7 +377,9 @@ def test_wrong_vector_dimension_identifies_chunk(
     assert SENSITIVE_CONTENT not in str(raised.value)
 
 
-@pytest.mark.parametrize("invalid_value", ["1.0", None, True, math.nan, math.inf, -math.inf])
+@pytest.mark.parametrize(
+    "invalid_value", ["1.0", None, True, math.nan, math.inf, -math.inf]
+)
 def test_invalid_vector_values_are_rejected(
     invalid_value: object, settings: EmbeddingSettings
 ) -> None:

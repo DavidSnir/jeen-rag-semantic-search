@@ -5,11 +5,12 @@ content with Gemini embeddings and PostgreSQL/pgvector semantic search.
 
 ## Status
 
-Stage 7 provides hardened, synchronous document indexing and semantic search for
-PDF and DOCX content. Expected validation, Gemini, and PostgreSQL failures use
-safe application exceptions, concise CLI messages, and predictable exit codes
-without tracebacks. Duplicate indexing is skipped and changed content is
-atomically replaced within the documented filename and strategy scope.
+Stage 8 provides a tested and quality-gated synchronous document indexing and
+semantic search baseline for PDF and DOCX content. Expected validation, Gemini,
+and PostgreSQL failures use safe application exceptions, concise CLI messages,
+and predictable exit codes without tracebacks. Duplicate indexing is skipped
+and changed content is atomically replaced within the documented filename and
+strategy scope.
 Generated answers and index reset are not implemented.
 
 ## Runtime
@@ -160,7 +161,7 @@ Inspect health or startup logs when needed:
 
 ```bash
 docker compose ps postgres
-docker inspect --format='{{.State.Health.Status}}' jeen-rag-postgres
+docker compose exec postgres pg_isready -h localhost -U "$POSTGRES_USER" -d "$POSTGRES_DB"
 docker compose logs postgres
 ```
 
@@ -192,8 +193,8 @@ For a complete development reset, remove the container and named volume:
 docker compose down --volumes
 ```
 
-Warning: removing `jeen-rag-postgres-data` permanently deletes all locally
-indexed data stored in that volume.
+Warning: `docker compose down --volumes` permanently deletes all locally indexed
+data stored in this Compose project's PostgreSQL volume.
 
 ## Document Indexing
 
@@ -367,15 +368,20 @@ python -m pytest tests/unit/test_cli_error_handling.py \
   tests/unit/test_database_repository_errors.py
 ```
 
-Database integration tests require the healthy Compose service and a matching
-`POSTGRES_URL` in `.env`:
+Database integration tests require an explicitly exported disposable database
+whose name ends in `_test`. The following synthetic credentials are for the
+isolated local Compose project only:
 
 ```bash
-docker compose up --detach --wait postgres
+export POSTGRES_DB=rag_app_test
+export POSTGRES_USER=rag_app_test
+export POSTGRES_PASSWORD=local-test-only-password
+export POSTGRES_PORT=55432
+export POSTGRES_URL=postgresql://rag_app_test:local-test-only-password@localhost:55432/rag_app_test
+docker compose -p rag-integration-test up --detach --wait postgres
 python -m rag_app.cli database-init
-python -m pytest tests/integration/test_database_setup.py \
-  tests/integration/test_indexing_persistence.py \
-  tests/integration/test_semantic_search.py
+python -m pytest tests/integration
+docker compose -p rag-integration-test down --volumes --remove-orphans
 ```
 
 ## Commands
@@ -428,14 +434,22 @@ handlers and exit-code contract.
 | No indexed results found | This is a successful empty search with exit code `0`. Initialize the schema and index content with the selected strategy if results were expected. |
 | Reset is unavailable | `reset --yes` exits with code `1` and does not change the database. |
 
-Run the same coverage gate used by CI with:
+Run the same lint, formatting, and coverage gates used by CI with:
 
 ```bash
+python -m ruff check .
+python -m ruff format --check .
 python -m coverage erase
 python -m coverage run --source=rag_app -m pytest tests/unit
 python -m coverage run --append --source=rag_app -m pytest tests/integration
 python -m coverage report --fail-under=80
 ```
+
+The unit suite removes ambient Gemini credentials and rejects real Gemini client
+construction. Integration tests require a disposable PostgreSQL database whose
+name ends in `_test`; they truncate test rows before and after every test. CI
+also runs checksum-pinned Gitleaks 8.30.1 against the current tree and every
+reachable regular and merge-commit diff with redacted output.
 
 ## Architecture
 
