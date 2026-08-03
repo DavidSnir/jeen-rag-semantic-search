@@ -6,7 +6,7 @@ on:
       - main
 
 jobs:
-  stage-2:
+  stage-3:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -67,7 +67,7 @@ jobs:
       - name: Verify complete database readiness
         run: python -m rag_app.cli database-check
 
-      - name: Run Stage 1 and Stage 2 unit tests
+      - name: Run Stage 1, Stage 2, and Stage 3 unit tests
         run: python -m coverage run --source=rag_app -m pytest tests/unit
 
       - name: Run database integration tests

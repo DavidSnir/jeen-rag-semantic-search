@@ -5,12 +5,12 @@ content with Gemini embeddings and PostgreSQL/pgvector semantic search.
 
 ## Status
 
-Stage 2 adds validated PDF and DOCX ingestion, page-aware PDF text extraction,
-ordered DOCX paragraph and table extraction, shared text cleaning, recurring PDF
-header and footer removal, and empty-document detection. Stage 1's reproducible
-PostgreSQL 17 and pgvector 0.8.2 environment, idempotent schema, and readiness
-verification remain available. Chunking, Gemini embeddings, document
-persistence, indexing, and semantic search are not implemented yet.
+Stage 3 adds fixed-size, sentence-based, and paragraph-based chunking over the
+parser-independent Stage 2 extraction model. Chunk results preserve source
+metadata, stable document-level indexes, and physical PDF page numbers. Stage
+1's reproducible PostgreSQL 17 and pgvector 0.8.2 environment and Stage 2's PDF
+and DOCX extraction remain available. Gemini embeddings, chunk persistence,
+complete indexing, and semantic search are not implemented yet.
 
 ## Runtime
 
@@ -63,8 +63,8 @@ requires changing the password component of `POSTGRES_URL`. URL-encode any
 URI-special characters used in that component. Replace the example password
 before starting PostgreSQL. Never commit `.env` or real credentials.
 
-`GEMINI_API_KEY` may remain empty for Stage 1 database operations and Stage 2
-document tests. No Gemini request is made by either stage.
+`GEMINI_API_KEY` may remain empty for Stage 1 database operations and Stage 2 or
+Stage 3 unit tests. No Gemini request is made by these stages.
 
 ## Document Extraction
 
@@ -82,6 +82,36 @@ OCR is not supported. Scanned or image-only PDFs must contain embedded text to
 be usable. Password-protected PDFs are not supported. Malformed files and
 documents with no extractable text are rejected with safe application errors.
 Extraction is currently an application API rather than a separate CLI command.
+
+## Document Chunking
+
+The application-level chunking boundary accepts an already extracted document
+and one of three canonical strategies:
+
+- `fixed` constructs 2,000-character windows with 500 characters of overlap and
+  a 1,500-character step. Size is measured in Python characters, not tokens,
+  words, bytes, or embedding-model units.
+- `sentence` uses a lazily initialized `spacy.blank("en")` pipeline containing
+  only the Sentencizer. Consecutive sentences are joined with one space up to
+  the shared 2,000-character maximum.
+- `paragraph` preserves DOCX extracted-unit boundaries and detects PDF
+  paragraphs at blank lines. Consecutive paragraphs are joined with two
+  newlines up to the shared maximum.
+
+Normal sentence and paragraph chunks do not overlap. Paragraphs over 2,000
+characters are grouped by sentence, and any individual sentence over 2,000
+characters uses the fixed-size 500-character overlap as a deterministic
+fallback. No downloaded spaCy language model is required.
+
+Every PDF page is processed independently, so no chunk spans physical pages and
+each PDF chunk retains its one-based source page number. DOCX chunks keep a null
+page number and may group adjacent ordered units where the strategy allows it.
+Chunk indexes are zero-based and continuous across the complete document.
+Empty results are removed, but meaningful short titles, sentences, paragraphs,
+table rows, and final windows are retained.
+
+Chunking is an application API rather than a separate command. It does not read
+files, request Gemini embeddings, or connect to PostgreSQL.
 
 ## Database Setup
 
@@ -147,9 +177,18 @@ python -m pytest tests/unit/test_document_validation.py \
   tests/unit/test_text_cleaning.py
 ```
 
-These tests use only small synthetic fixtures under `tests/fixtures`; they do
-not download documents, require Gemini credentials, or contact external
-services.
+Run only the Stage 3 chunking tests with:
+
+```bash
+python -m pytest tests/unit/test_chunking_validation.py \
+  tests/unit/test_fixed_chunking.py \
+  tests/unit/test_sentence_chunking.py \
+  tests/unit/test_paragraph_chunking.py
+```
+
+These tests use constructed extracted documents or small synthetic fixtures.
+They do not download documents or spaCy models, require Gemini credentials, or
+contact external services.
 
 Database integration tests require the healthy Compose service and a matching
 `POSTGRES_URL` in `.env`:
@@ -177,18 +216,20 @@ python -m rag_app.cli search --query "What is proof of work?" --strategy paragra
 python -m rag_app.cli reset --yes
 ```
 
-The supported chunking strategies will be `fixed`, `sentence`, and `paragraph`.
-The public indexing and search workflows remain incomplete because chunking,
-embeddings, and persistence are not connected. The commands expose help and
-validate their arguments, but report that application functionality is
-unavailable. Only `database-init` and `database-check` are currently functional.
+The supported chunking strategies are `fixed`, `sentence`, and `paragraph`.
+The public indexing and search workflows remain incomplete because extraction,
+chunking, embeddings, and persistence are not connected into a complete flow.
+Gemini embedding requests and database insertion are not implemented. The
+commands expose help and validate their arguments, but report that later-stage
+application functionality is unavailable. Only `database-init` and
+`database-check` are currently functional commands.
 
 ## Architecture
 
 - `rag_app/extractors`: implemented validation and structured PDF/DOCX text
   extraction.
-- `rag_app/processing`: implemented shared cleaning; the three chunking
-  strategies remain planned.
+- `rag_app/processing`: implemented shared cleaning and all three bounded,
+  page-aware chunking strategies.
 - `rag_app/embeddings`: Gemini embedding requests and dimension validation.
 - `rag_app/database`: implemented PostgreSQL connection, schema, and readiness
   boundaries; later persistence and vector search remain planned.

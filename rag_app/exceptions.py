@@ -33,6 +33,22 @@ class EmptyDocumentError(DocumentError):
     """Raised when extraction and cleaning produce no meaningful text."""
 
 
+class ChunkingError(RagAppError):
+    """Base class for expected document-chunking failures."""
+
+
+class InvalidChunkingStrategyError(ChunkingError):
+    """Raised when a requested chunking strategy is not supported."""
+
+
+class InvalidChunkingInputError(ChunkingError):
+    """Raised when an extracted document cannot be chunked safely."""
+
+
+class ChunkGenerationError(ChunkingError):
+    """Raised when chunking cannot produce usable bounded content."""
+
+
 class DatabaseError(RagAppError):
     """Base class for expected database failures."""
 

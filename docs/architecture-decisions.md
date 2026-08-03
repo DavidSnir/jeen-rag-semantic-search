@@ -127,3 +127,18 @@ later stages add resolved implementation details without removing them.
 83. Detect empty or non-extractable documents only after margin removal, shared cleaning, and empty-unit removal.
 84. Do not add OCR or password handling; scanned PDFs require embedded text and password-protected PDFs are rejected.
 85. Expose extraction as an application API without adding a separate extraction CLI command or presenting indexing as complete.
+
+## Stage 3 Chunking Implementation
+
+86. Represent chunks and complete chunking results with shared immutable models containing no embeddings, database identifiers, or document hashes.
+87. Apply one common 2,000-character maximum to fixed, sentence, and paragraph chunks, including separators inserted during grouping.
+88. Use a 1,500-character fixed-window step so successive full windows have exactly 500 characters of overlap.
+89. Do not overlap normal sentence or paragraph chunks; overlap applies only to the fixed strategy and oversized individual-sentence fallback.
+90. Join grouped sentences with one regular space and grouped paragraphs with two newline characters.
+91. Lazily initialize and reuse one `spacy.blank("en")` pipeline containing only the Sentencizer component, without loading a downloaded language model.
+92. Split every oversized paragraph by sentence and route every oversized individual sentence through the one shared fixed-size splitter.
+93. Process PDF pages independently for every strategy so no chunk spans physical pages and every chunk retains one unambiguous physical page number.
+94. Assign continuous zero-based chunk indexes only after all ordered document chunks have been generated and empty results removed.
+95. Remove only empty or whitespace-only chunks and preserve all meaningful short chunks without imposing a minimum content length.
+96. Normalize external strategy strings by trimming and lowercasing, reject aliases or unsupported values, and retain only the canonical `fixed`, `sentence`, or `paragraph` value.
+97. Define the canonical chunking strategy type once outside the CLI and share it between the CLI and processing layer.
