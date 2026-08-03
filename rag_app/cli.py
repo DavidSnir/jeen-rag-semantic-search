@@ -1,7 +1,6 @@
 """Typer command-line interface for application use cases."""
 
 from collections.abc import Callable, Sequence
-from enum import Enum
 from pathlib import Path
 from typing import Annotated, TypeVar
 
@@ -12,6 +11,7 @@ from rag_app.database.repository import (
     check_database_readiness,
     initialize_schema,
 )
+from rag_app.documents import ChunkingStrategy
 from rag_app.exceptions import RagAppError
 from rag_app.services.indexing import index_document, reset_index
 from rag_app.services.search import search_documents
@@ -23,14 +23,6 @@ app = typer.Typer(
 )
 
 Result = TypeVar("Result")
-
-
-class ChunkingStrategy(str, Enum):
-    """Chunking strategies accepted by indexing and search commands."""
-
-    fixed = "fixed"
-    sentence = "sentence"
-    paragraph = "paragraph"
 
 
 @app.command("database-init")

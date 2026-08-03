@@ -1,9 +1,18 @@
 """Shared document representations independent of parser libraries."""
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Literal
 
 SourceType = Literal["PDF", "DOCX"]
+
+
+class ChunkingStrategy(str, Enum):
+    """Canonical chunking strategies shared by every application boundary."""
+
+    fixed = "fixed"
+    sentence = "sentence"
+    paragraph = "paragraph"
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,3 +31,22 @@ class ExtractedDocument:
     source_file: str
     source_type: SourceType
     units: tuple[ExtractedTextUnit, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class Chunk:
+    """One ordered piece of document content ready for later embedding."""
+
+    content: str
+    chunk_index: int
+    page_number: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkedDocument:
+    """Immutable chunking result with source-level persistence metadata."""
+
+    source_file: str
+    source_type: SourceType
+    chunking_strategy: ChunkingStrategy
+    chunks: tuple[Chunk, ...]
