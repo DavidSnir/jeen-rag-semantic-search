@@ -20,6 +20,7 @@ from rag_app.documents import (
     ChunkingStrategy,
     EmbeddedChunk,
     EmbeddedDocument,
+    EmbeddingVector,
 )
 from rag_app.embeddings.vectors import validate_and_normalize_embedding
 from rag_app.exceptions import (
@@ -35,6 +36,7 @@ from rag_app.processing.chunking import MAX_CHUNK_SIZE
 logger = logging.getLogger(__name__)
 
 _RETRIEVAL_DOCUMENT_TASK = "RETRIEVAL_DOCUMENT"
+_RETRIEVAL_QUERY_TASK = "RETRIEVAL_QUERY"
 _MISSING = object()
 
 
@@ -66,28 +68,69 @@ def embed_document(
             client, document, validated_settings, contents, title
         )
 
-    try:
-        owned_client = genai.Client(
-            api_key=validated_settings.gemini_api_key,
-            vertexai=False,
-        )
-    except Exception as error:
-        raise EmbeddingConfigurationError(
-            "The Gemini embedding client could not be configured"
-        ) from error
+    owned_client = _create_client(validated_settings)
 
     try:
         return _request_embeddings(
             owned_client, document, validated_settings, contents, title
         )
     finally:
-        try:
-            owned_client.close()
-        except Exception:
-            logger.warning(
-                "Gemini embedding client cleanup failed model=%s",
-                validated_settings.embedding_model,
-            )
+        _close_client(owned_client, validated_settings)
+
+
+def embed_query(
+    query: str,
+    settings: EmbeddingSettings | None = None,
+    *,
+    client: _GeminiClient | None = None,
+) -> EmbeddingVector:
+    """Embed one canonical search query using retrieval-query semantics."""
+    canonical_query = _validate_query(query)
+    validated_settings = validate_embedding_settings(
+        settings if settings is not None else load_embedding_settings()
+    )
+
+    if client is not None:
+        return _request_query_embedding(
+            client, canonical_query, validated_settings
+        )
+
+    owned_client = _create_client(validated_settings)
+    try:
+        return _request_query_embedding(
+            owned_client, canonical_query, validated_settings
+        )
+    finally:
+        _close_client(owned_client, validated_settings)
+
+
+def _create_client(settings: EmbeddingSettings) -> _GeminiClient:
+    try:
+        return genai.Client(api_key=settings.gemini_api_key, vertexai=False)
+    except Exception as error:
+        raise EmbeddingConfigurationError(
+            "The Gemini embedding client could not be configured"
+        ) from error
+
+
+def _close_client(client: _GeminiClient, settings: EmbeddingSettings) -> None:
+    try:
+        close = getattr(client, "close")
+        close()
+    except Exception:
+        logger.warning(
+            "Gemini embedding client cleanup failed model=%s",
+            settings.embedding_model,
+        )
+
+
+def _validate_query(query: object) -> str:
+    if not isinstance(query, str):
+        raise InvalidEmbeddingInputError("Embedding query must be a string")
+    canonical_query = query.strip()
+    if not canonical_query:
+        raise InvalidEmbeddingInputError("Embedding query must not be empty")
+    return canonical_query
 
 
 def _validate_document(document: ChunkedDocument) -> str:
@@ -184,6 +227,71 @@ def _request_embeddings(
         output_dimensionality=settings.embedding_dimension,
     )
 
+    normalized_vectors = _request_vectors(
+        client,
+        settings,
+        contents,
+        request_config,
+    )
+
+    embedded_chunks = tuple(
+        EmbeddedChunk(chunk=document.chunks[index], embedding=vector)
+        for index, vector in enumerate(normalized_vectors)
+    )
+
+    logger.info(
+        "Gemini document embeddings validated model=%s vectors=%d dimension=%d",
+        settings.embedding_model,
+        len(embedded_chunks),
+        settings.embedding_dimension,
+    )
+    return EmbeddedDocument(
+        source_file=document.source_file,
+        source_type=document.source_type,
+        chunking_strategy=document.chunking_strategy,
+        chunks=embedded_chunks,
+    )
+
+
+def _request_query_embedding(
+    client: _GeminiClient,
+    query: str,
+    settings: EmbeddingSettings,
+) -> EmbeddingVector:
+    logger.info(
+        "Requesting Gemini query embedding model=%s dimension=%d query_chars=%d",
+        settings.embedding_model,
+        settings.embedding_dimension,
+        len(query),
+    )
+    request_config = types.EmbedContentConfig(
+        task_type=_RETRIEVAL_QUERY_TASK,
+        output_dimensionality=settings.embedding_dimension,
+    )
+    vectors = _request_vectors(
+        client,
+        settings,
+        [query],
+        request_config,
+        value_label="query",
+    )
+    logger.info(
+        "Gemini query embedding validated model=%s vectors=1 dimension=%d",
+        settings.embedding_model,
+        settings.embedding_dimension,
+    )
+    return vectors[0]
+
+
+def _request_vectors(
+    client: _GeminiClient,
+    settings: EmbeddingSettings,
+    contents: list[str],
+    request_config: types.EmbedContentConfig,
+    *,
+    value_label: str | None = None,
+) -> tuple[EmbeddingVector, ...]:
+
     try:
         response = client.models.embed_content(
             model=settings.embedding_model,
@@ -217,6 +325,7 @@ def _request_embeddings(
                 getattr(embedding, "values", _MISSING),
                 chunk_index=chunk_index,
                 expected_dimension=settings.embedding_dimension,
+                value_label=value_label,
             )
             for chunk_index, embedding in enumerate(embeddings)
         )
@@ -229,23 +338,7 @@ def _request_embeddings(
     except InvalidGeminiResponseError:
         _log_validation_failure(settings, len(contents), "invalid-response")
         raise
-    embedded_chunks = tuple(
-        EmbeddedChunk(chunk=document.chunks[index], embedding=vector)
-        for index, vector in enumerate(normalized_vectors)
-    )
-
-    logger.info(
-        "Gemini document embeddings validated model=%s vectors=%d dimension=%d",
-        settings.embedding_model,
-        len(embedded_chunks),
-        settings.embedding_dimension,
-    )
-    return EmbeddedDocument(
-        source_file=document.source_file,
-        source_type=document.source_type,
-        chunking_strategy=document.chunking_strategy,
-        chunks=embedded_chunks,
-    )
+    return normalized_vectors
 
 
 def _response_embeddings(response: object, expected_count: int) -> Sequence[object]:
@@ -314,4 +407,4 @@ def _api_error_message(status_code: int) -> str:
     return "Gemini embedding generation failed"
 
 
-__all__ = ["embed_document"]
+__all__ = ["embed_document", "embed_query"]

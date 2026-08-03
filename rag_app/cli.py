@@ -11,13 +11,13 @@ from rag_app.database.repository import (
     check_database_readiness,
     initialize_schema,
 )
-from rag_app.documents import ChunkingStrategy, IndexingStatus
+from rag_app.documents import ChunkingStrategy, IndexingStatus, SearchResponse
 from rag_app.exceptions import RagAppError
 from rag_app.services.indexing import index_document, reset_index
 from rag_app.services.search import search_documents
 
 app = typer.Typer(
-    help="Manage the database foundation for document indexing and search.",
+    help="Index documents and search indexed content semantically.",
     no_args_is_help=True,
     add_completion=False,
 )
@@ -54,9 +54,10 @@ def _validate_document_file(path: Path) -> Path:
 
 
 def _validate_query(query: str) -> str:
-    if not query.strip():
+    canonical_query = query.strip()
+    if not canonical_query:
         raise typer.BadParameter("Query must not be empty")
-    return query
+    return canonical_query
 
 
 @app.command()
@@ -112,7 +113,29 @@ def search(
     ] = DEFAULT_TOP_K,
 ) -> None:
     """Search indexed content using semantic similarity."""
-    _run(search_documents, query, strategy.value, top_k)
+    response = _run(search_documents, query, strategy.value, top_k)
+    _display_search_response(response)
+
+
+def _display_search_response(response: SearchResponse) -> None:
+    if not response.matches:
+        typer.echo(
+            "No indexed results found for "
+            f"strategy={response.chunking_strategy.value}."
+        )
+        return
+
+    for match in response.matches:
+        page = str(match.page_number) if match.page_number is not None else "n/a"
+        typer.echo(f"Result {match.rank} | score={match.score:.4f}")
+        typer.echo(
+            f"source={match.source_file} | type={match.source_type} | "
+            f"strategy={match.chunking_strategy.value} | "
+            f"chunk={match.chunk_index} | page={page}"
+        )
+        typer.echo(match.content)
+        if match.rank != len(response.matches):
+            typer.echo("-" * 72)
 
 
 @app.command()
