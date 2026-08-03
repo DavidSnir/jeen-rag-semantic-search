@@ -11,7 +11,7 @@ from rag_app.database.repository import (
     check_database_readiness,
     initialize_schema,
 )
-from rag_app.documents import ChunkingStrategy
+from rag_app.documents import ChunkingStrategy, IndexingStatus
 from rag_app.exceptions import RagAppError
 from rag_app.services.indexing import index_document, reset_index
 from rag_app.services.search import search_documents
@@ -79,7 +79,17 @@ def index(
     ],
 ) -> None:
     """Index one document with the selected chunking strategy."""
-    _run(index_document, file, strategy.value)
+    result = _run(index_document, file, strategy.value)
+    status_label = {
+        IndexingStatus.indexed: "Indexed document",
+        IndexingStatus.replaced: "Replaced existing document",
+        IndexingStatus.skipped: "Skipped unchanged document",
+    }[result.status]
+    typer.echo(
+        f"{status_label}: {result.source_file} | "
+        f"strategy={result.chunking_strategy.value} | "
+        f"chunks={result.chunk_count} | elapsed={result.elapsed_seconds:.2f}s"
+    )
 
 
 @app.command()

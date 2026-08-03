@@ -16,6 +16,14 @@ class ChunkingStrategy(str, Enum):
     paragraph = "paragraph"
 
 
+class IndexingStatus(str, Enum):
+    """Canonical outcomes for one document-indexing operation."""
+
+    indexed = "indexed"
+    replaced = "replaced"
+    skipped = "skipped"
+
+
 @dataclass(frozen=True, slots=True)
 class ExtractedTextUnit:
     """One ordered piece of cleaned text from a source document."""
@@ -69,3 +77,14 @@ class EmbeddedDocument:
     source_type: SourceType
     chunking_strategy: ChunkingStrategy
     chunks: tuple[EmbeddedChunk, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class IndexingResult:
+    """Safe application result returned after indexing completes successfully."""
+
+    status: IndexingStatus
+    source_file: str
+    chunking_strategy: ChunkingStrategy
+    chunk_count: int
+    elapsed_seconds: float
