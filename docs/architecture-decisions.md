@@ -162,3 +162,23 @@ later stages add resolved implementation details without removing them.
 112. Convert SDK API and transport failures into categorized application exceptions without copying raw provider details, while preserving the provider exception as the internal cause.
 113. Log embedding metadata only: approved model, dimension, chunk count, source filename basename, strategy, response count, and safe failure category.
 114. Share strict vector validation and L2 normalization through a numerical embedding module so later query embeddings can use identical behavior.
+
+## Stage 5 Document Indexing Implementation
+
+115. Make `index` and the root-level `index_documents.py` wrapper functional for PDF and DOCX while leaving semantic search and index reset explicitly unavailable.
+116. Run indexing synchronously through path and strategy validation, database readiness verification, hashing, duplicate-state inspection, extraction, chunking, Gemini document embedding, and persistence.
+117. Calculate the lowercase SHA-256 digest from the exact binary bytes read from the source file, without hashing extracted or normalized text.
+118. Define replacement scope as the source filename basename plus canonical chunking strategy; do not persist or compare the source directory.
+119. Accept the basename-only identity limitation: two files in different directories with the same basename and strategy are treated as one logical document and can skip or replace one another.
+120. Skip before extraction and Gemini embedding only when the scope contains exactly one stored hash equal to the exact-byte source hash; return its existing chunk count.
+121. Replace all stored chunks in the same basename and strategy scope when the exact-byte hash changes, and repair an inconsistent scope containing multiple stored hashes through the same complete replacement path.
+122. Allow different strategies for one basename to coexist, and allow different basenames to coexist even when their exact bytes and hashes match; renaming a file therefore creates a separate stored identity.
+123. Recheck duplicate state under a transaction-scoped PostgreSQL advisory lock derived from basename and strategy so concurrent operations for one replacement scope are serialized.
+124. Perform old-chunk deletion, insertion of every new chunk, and verification of hash, count, and continuous chunk indexes in one transaction, committing only after verification and rolling back the complete replacement on failure.
+125. Prefer PostgreSQL `COPY FROM STDIN` for complete-document insertion and use `executemany()` only when COPY is unavailable on the database cursor.
+126. Persist chunk content and normalized embedding with `source_file`, `document_hash`, `source_type`, `chunk_index`, `chunking_strategy`, and `page_number`; let PostgreSQL assign `created_at` from the canonical schema default.
+127. Preserve one-based page numbers for PDF chunks and `NULL` page numbers for DOCX chunks at the persistence boundary.
+128. Complete extraction, chunking, and Gemini embedding before entering persistence so any Gemini request or validation failure writes no new rows and leaves a previously indexed version unchanged.
+129. Return an immutable safe indexing summary containing indexed, replaced, or skipped status, source basename, canonical strategy, chunk count, and elapsed seconds, without content, vectors, credentials, or local paths.
+130. Keep search, query embedding, semantic result construction, and destructive reset outside Stage 5.
+131. Return process exit code zero for indexed, replaced, and skipped outcomes, code one for expected runtime failures, and retain Typer's code two for usage errors.

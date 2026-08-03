@@ -37,6 +37,10 @@ class EmptyDocumentError(DocumentError):
     """Raised when extraction and cleaning produce no meaningful text."""
 
 
+class DocumentHashingError(DocumentError):
+    """Raised when validated source bytes cannot be hashed safely."""
+
+
 class ChunkingError(RagAppError):
     """Base class for expected document-chunking failures."""
 
@@ -77,6 +81,14 @@ class EmbeddingNormalizationError(EmbeddingError):
     """Raised when an embedding cannot be normalized to unit length."""
 
 
+class IndexingPipelineError(RagAppError):
+    """Raised when indexing stages return incompatible application state."""
+
+
+class DuplicateStateInconsistencyError(IndexingPipelineError):
+    """Raised when stored document-version state cannot be interpreted safely."""
+
+
 class DatabaseError(RagAppError):
     """Base class for expected database failures."""
 
@@ -91,3 +103,11 @@ class DatabaseSchemaError(DatabaseError):
 
 class DatabaseOperationError(DatabaseError):
     """Raised when an established connection cannot complete an operation."""
+
+
+class PersistenceError(DatabaseError):
+    """Raised when indexed document persistence cannot complete atomically."""
+
+
+class PersistenceVerificationError(PersistenceError):
+    """Raised when candidate rows do not represent the complete document."""

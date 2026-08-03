@@ -1,13 +1,18 @@
-"""Database schema initialization and infrastructure inspection boundary."""
+"""Database schema inspection and transactional chunk persistence boundary."""
 
+import hashlib
+import logging
+import math
 import re
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 import psycopg
+from pgvector import Vector
 from psycopg import Connection
 
+from rag_app.config import EMBEDDING_DIMENSION
 from rag_app.database.connection import (
     open_database_connection,
     register_vector_types,
@@ -15,7 +20,21 @@ from rag_app.database.connection import (
 from rag_app.exceptions import (
     DatabaseOperationError,
     DatabaseSchemaError,
+    DuplicateStateInconsistencyError,
+    PersistenceError,
+    PersistenceVerificationError,
+    RagAppError,
 )
+from rag_app.documents import (
+    Chunk,
+    ChunkingStrategy,
+    EmbeddedChunk,
+    EmbeddedDocument,
+    IndexingStatus,
+)
+from rag_app.processing.chunking import MAX_CHUNK_SIZE
+
+logger = logging.getLogger(__name__)
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
@@ -57,6 +76,35 @@ RELATIONAL_INDEXES = {
 HNSW_INDEX = "idx_chunks_embedding_hnsw_cosine"
 EXPECTED_POSTGRESQL_MAJOR = 17
 EXPECTED_PGVECTOR_VERSION = "0.8.2"
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
+_COPY_CHUNKS_SQL = """
+    COPY public.chunks (
+        content,
+        embedding,
+        source_file,
+        document_hash,
+        source_type,
+        chunk_index,
+        chunking_strategy,
+        page_number
+    ) FROM STDIN
+"""
+
+_INSERT_CHUNK_SQL = """
+    INSERT INTO public.chunks (
+        content,
+        embedding,
+        source_file,
+        document_hash,
+        source_type,
+        chunk_index,
+        chunking_strategy,
+        page_number
+    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+"""
+
+_PersistenceRow = tuple[object, object, str, str, str, int, str, int | None]
 
 EXPECTED_CONSTRAINT_DEFINITIONS = {
     "chunks_pkey": "PRIMARY KEY (id)",
@@ -91,6 +139,43 @@ class DatabaseStatus:
     postgresql_version: str
     pgvector_version: str
     embedding_type: str
+
+
+@dataclass(frozen=True, slots=True)
+class IndexedDocumentVersion:
+    """One stored hash and its complete current chunk count."""
+
+    document_hash: str
+    chunk_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class IndexedDocumentState:
+    """Immutable stored state for one filename and chunking strategy."""
+
+    versions: tuple[IndexedDocumentVersion, ...]
+
+    @property
+    def document_hashes(self) -> tuple[str, ...]:
+        return tuple(version.document_hash for version in self.versions)
+
+    @property
+    def total_chunk_count(self) -> int:
+        return sum(version.chunk_count for version in self.versions)
+
+    def chunk_count_for(self, document_hash: str) -> int | None:
+        for version in self.versions:
+            if version.document_hash == document_hash:
+                return version.chunk_count
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class PersistenceResult:
+    """Outcome decided by the authoritative write transaction."""
+
+    status: IndexingStatus
+    chunk_count: int
 
 
 class _SchemaMismatchError(Exception):
@@ -149,6 +234,311 @@ def check_database_readiness() -> DatabaseStatus:
             raise DatabaseOperationError(
                 "Database readiness check failed."
             ) from error
+
+
+def get_indexed_document_state(
+    source_file: str, strategy: ChunkingStrategy
+) -> IndexedDocumentState:
+    """Read hashes and chunk counts for one logical document strategy."""
+    _validate_identity(source_file, strategy)
+
+    with open_database_connection() as connection:
+        try:
+            with connection.cursor() as cursor:
+                state = _read_indexed_document_state(cursor, source_file, strategy)
+            connection.rollback()
+            return state
+        except RagAppError:
+            _rollback_quietly(connection)
+            raise
+        except psycopg.Error as error:
+            _rollback_quietly(connection)
+            raise PersistenceError(
+                "Indexed document state could not be read."
+            ) from error
+
+
+def persist_embedded_document(
+    document: EmbeddedDocument, document_hash: str
+) -> PersistenceResult:
+    """Insert or atomically replace one complete embedded document."""
+    _validate_embedded_document(document, document_hash)
+    rows = _build_persistence_rows(document, document_hash)
+    expected_count = len(document.chunks)
+    if len(rows) != expected_count:
+        raise PersistenceVerificationError(
+            "Persistence row preparation did not preserve every document chunk."
+        )
+
+    with open_database_connection() as connection:
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT pg_advisory_xact_lock(%s)",
+                    (_document_lock_key(document.source_file, document.chunking_strategy),),
+                )
+                state = _read_indexed_document_state(
+                    cursor, document.source_file, document.chunking_strategy
+                )
+                existing_count = state.chunk_count_for(document_hash)
+                if len(state.versions) == 1 and existing_count is not None:
+                    connection.commit()
+                    return PersistenceResult(
+                        status=IndexingStatus.skipped,
+                        chunk_count=existing_count,
+                    )
+
+                status = (
+                    IndexingStatus.replaced
+                    if state.versions
+                    else IndexingStatus.indexed
+                )
+                if state.versions:
+                    cursor.execute(
+                        """
+                        DELETE FROM public.chunks
+                        WHERE source_file = %s AND chunking_strategy = %s
+                        """,
+                        (
+                            document.source_file,
+                            document.chunking_strategy.value,
+                        ),
+                    )
+
+                _insert_rows(cursor, rows)
+                _verify_persisted_document(
+                    cursor,
+                    document.source_file,
+                    document.chunking_strategy,
+                    document_hash,
+                    expected_count,
+                )
+
+            connection.commit()
+            return PersistenceResult(status=status, chunk_count=expected_count)
+        except RagAppError:
+            _rollback_quietly(connection)
+            raise
+        except Exception as error:
+            _rollback_quietly(connection)
+            raise PersistenceError(
+                f"Document persistence failed for '{document.source_file}'."
+            ) from error
+
+
+def _validate_identity(source_file: str, strategy: ChunkingStrategy) -> None:
+    if not _is_safe_basename(source_file):
+        raise PersistenceError("Persistence requires a safe source filename.")
+    if not isinstance(strategy, ChunkingStrategy):
+        raise PersistenceError("Persistence requires a canonical chunking strategy.")
+
+
+def _validate_embedded_document(
+    document: EmbeddedDocument, document_hash: str
+) -> None:
+    if not isinstance(document, EmbeddedDocument):
+        raise PersistenceError("Persistence input must be an EmbeddedDocument.")
+    _validate_identity(document.source_file, document.chunking_strategy)
+    if not isinstance(document_hash, str) or not _SHA256_PATTERN.fullmatch(
+        document_hash
+    ):
+        raise PersistenceError(
+            "Persistence requires a lowercase SHA-256 document hash."
+        )
+    if document.source_type not in {"PDF", "DOCX"}:
+        raise PersistenceError("Persistence input has an unsupported source type.")
+
+    expected_extension = ".pdf" if document.source_type == "PDF" else ".docx"
+    if Path(document.source_file).suffix.lower() != expected_extension:
+        raise PersistenceError(
+            "Persistence source filename and source type are inconsistent."
+        )
+    if not isinstance(document.chunks, tuple) or not document.chunks:
+        raise PersistenceError(
+            "Persistence input must contain at least one embedded chunk."
+        )
+
+    for expected_index, embedded_chunk in enumerate(document.chunks):
+        _validate_embedded_chunk(
+            embedded_chunk, expected_index, document.source_type
+        )
+
+
+def _validate_embedded_chunk(
+    embedded_chunk: EmbeddedChunk, expected_index: int, source_type: str
+) -> None:
+    if not isinstance(embedded_chunk, EmbeddedChunk) or not isinstance(
+        embedded_chunk.chunk, Chunk
+    ):
+        raise PersistenceError(
+            f"Persistence input contains an invalid chunk at index {expected_index}."
+        )
+
+    chunk = embedded_chunk.chunk
+    if (
+        not isinstance(chunk.chunk_index, int)
+        or isinstance(chunk.chunk_index, bool)
+        or chunk.chunk_index != expected_index
+    ):
+        raise PersistenceError(
+            "Persistence chunk indexes must be zero-based, continuous, and ordered."
+        )
+    if (
+        not isinstance(chunk.content, str)
+        or not chunk.content.strip()
+        or len(chunk.content) > MAX_CHUNK_SIZE
+    ):
+        raise PersistenceError(
+            f"Persistence chunk {expected_index} has invalid content."
+        )
+
+    if source_type == "PDF":
+        if (
+            not isinstance(chunk.page_number, int)
+            or isinstance(chunk.page_number, bool)
+            or chunk.page_number < 1
+        ):
+            raise PersistenceError(
+                f"Persistence PDF chunk {expected_index} has an invalid page number."
+            )
+    elif chunk.page_number is not None:
+        raise PersistenceError(
+            f"Persistence DOCX chunk {expected_index} must not have a page number."
+        )
+
+    vector = embedded_chunk.embedding
+    if not isinstance(vector, tuple) or len(vector) != EMBEDDING_DIMENSION:
+        raise PersistenceError(
+            f"Persistence embedding {expected_index} must contain "
+            f"{EMBEDDING_DIMENSION} values."
+        )
+    if any(type(value) is not float or not math.isfinite(value) for value in vector):
+        raise PersistenceError(
+            f"Persistence embedding {expected_index} contains an invalid value."
+        )
+    norm = math.hypot(*vector)
+    if norm == 0.0 or not math.isclose(
+        norm, 1.0, rel_tol=1e-12, abs_tol=1e-12
+    ):
+        raise PersistenceError(
+            f"Persistence embedding {expected_index} is not normalized."
+        )
+
+
+def _is_safe_basename(source_file: object) -> bool:
+    return (
+        isinstance(source_file, str)
+        and bool(source_file.strip())
+        and "\x00" not in source_file
+        and source_file not in {".", ".."}
+        and Path(source_file).name == source_file
+        and PureWindowsPath(source_file).name == source_file
+    )
+
+
+def _build_persistence_rows(
+    document: EmbeddedDocument, document_hash: str
+) -> tuple[_PersistenceRow, ...]:
+    return tuple(
+        (
+            embedded_chunk.chunk.content,
+            Vector(list(embedded_chunk.embedding)),
+            document.source_file,
+            document_hash,
+            document.source_type,
+            embedded_chunk.chunk.chunk_index,
+            document.chunking_strategy.value,
+            embedded_chunk.chunk.page_number,
+        )
+        for embedded_chunk in document.chunks
+    )
+
+
+def _read_indexed_document_state(
+    cursor: Any, source_file: str, strategy: ChunkingStrategy
+) -> IndexedDocumentState:
+    rows = cursor.execute(
+        """
+        SELECT document_hash, count(*)
+        FROM public.chunks
+        WHERE source_file = %s AND chunking_strategy = %s
+        GROUP BY document_hash
+        ORDER BY document_hash
+        """,
+        (source_file, strategy.value),
+    ).fetchall()
+    versions: list[IndexedDocumentVersion] = []
+    for document_hash, chunk_count in rows:
+        if (
+            not isinstance(document_hash, str)
+            or not isinstance(chunk_count, int)
+            or isinstance(chunk_count, bool)
+            or chunk_count < 1
+        ):
+            raise DuplicateStateInconsistencyError(
+                "Stored document-version state is inconsistent."
+            )
+        versions.append(
+            IndexedDocumentVersion(
+                document_hash=document_hash,
+                chunk_count=chunk_count,
+            )
+        )
+
+    state = IndexedDocumentState(versions=tuple(versions))
+    if len(state.versions) > 1:
+        logger.warning(
+            "Multiple document versions detected source_file=%s strategy=%s "
+            "versions=%d chunks=%d; replacement will restore the invariant",
+            source_file,
+            strategy.value,
+            len(state.versions),
+            state.total_chunk_count,
+        )
+    return state
+
+
+def _insert_rows(cursor: Any, rows: tuple[_PersistenceRow, ...]) -> None:
+    copy_method = getattr(cursor, "copy", None)
+    if not callable(copy_method):
+        cursor.executemany(_INSERT_CHUNK_SQL, rows)
+        return
+
+    with copy_method(_COPY_CHUNKS_SQL) as copy:
+        for row in rows:
+            copy.write_row(row)
+
+
+def _verify_persisted_document(
+    cursor: Any,
+    source_file: str,
+    strategy: ChunkingStrategy,
+    document_hash: str,
+    expected_count: int,
+) -> None:
+    row = cursor.execute(
+        """
+        SELECT array_agg(DISTINCT document_hash ORDER BY document_hash),
+               count(*),
+               min(chunk_index),
+               max(chunk_index),
+               count(DISTINCT chunk_index)
+        FROM public.chunks
+        WHERE source_file = %s AND chunking_strategy = %s
+        """,
+        (source_file, strategy.value),
+    ).fetchone()
+    expected = ([document_hash], expected_count, 0, expected_count - 1, expected_count)
+    if row != expected:
+        raise PersistenceVerificationError(
+            f"Persisted document verification failed for '{source_file}'."
+        )
+
+
+def _document_lock_key(source_file: str, strategy: ChunkingStrategy) -> int:
+    identity = f"{len(source_file)}:{source_file}:{strategy.value}".encode("utf-8")
+    digest = hashlib.sha256(identity).digest()
+    return int.from_bytes(digest[:8], byteorder="big", signed=True)
 
 
 def _inspect_schema(connection: Connection[Any]) -> DatabaseStatus:

@@ -5,12 +5,12 @@ content with Gemini embeddings and PostgreSQL/pgvector semantic search.
 
 ## Status
 
-Stage 4 adds validated Gemini document embeddings over the ordered Stage 3
-chunk model. One synchronous multi-content request produces a positional
-768-dimensional vector for every chunk, and every accepted vector is manually
-L2-normalized. Stage 1's PostgreSQL/pgvector environment, Stage 2 extraction,
-and Stage 3 chunking remain available. Chunk persistence, duplicate-document
-handling, complete indexing, and semantic search are not implemented yet.
+Stage 5 provides a functional, synchronous indexing workflow for PDF and DOCX
+documents. It connects path validation, exact-byte SHA-256 hashing, extraction,
+the `fixed`, `sentence`, and `paragraph` chunking strategies, Gemini document
+embeddings, and atomic PostgreSQL/pgvector persistence. Duplicate content is
+skipped and changed content is replaced within the documented filename and
+strategy scope. Semantic search and index reset are not implemented yet.
 
 ## Runtime
 
@@ -68,6 +68,10 @@ only in the local environment or uncommitted `.env` file; never commit it. The
 embedding layer requires `EMBEDDING_MODEL=gemini-embedding-001` and
 `EMBEDDING_DIMENSION=768`, and rejects other non-empty model values or other
 dimensions. Database-only operations do not require the Gemini key.
+
+Indexing requires both a reachable PostgreSQL database with the canonical
+schema and a valid Gemini key. Automated tests inject Gemini fakes and neither
+need nor use a real key.
 
 ## Document Extraction
 
@@ -189,6 +193,65 @@ docker compose down --volumes
 Warning: removing `jeen-rag-postgres-data` permanently deletes all locally
 indexed data stored in that volume.
 
+## Document Indexing
+
+Before indexing, configure `.env`, start PostgreSQL, and initialize and verify
+the canonical schema as described above. Set a valid `GEMINI_API_KEY`, then use
+either the assignment-compatible entry point:
+
+```bash
+python index_documents.py --file data/input/document.pdf --strategy fixed
+```
+
+or the equivalent unified CLI command:
+
+```bash
+python -m rag_app.cli index --file data/input/document.docx --strategy paragraph
+```
+
+Both `.pdf` and `.docx` files are supported, and `fixed`, `sentence`, and
+`paragraph` are the available strategies. Indexing calculates SHA-256 over the
+exact binary bytes of the source file before extraction. This means even a
+binary-only change, such as rewritten PDF or DOCX container metadata, produces
+a different hash whether or not the extracted text changed.
+
+Replacement scope is the source filename basename plus chunking strategy; the
+source directory is intentionally not stored. The resulting behavior is:
+
+- The same basename, exact bytes, and strategy is skipped without extraction,
+  a Gemini request, or new inserts.
+- The same basename and strategy with different bytes replaces all chunks in
+  that scope.
+- The same basename indexed with a different strategy coexists as a separate
+  indexed representation.
+- A different basename coexists even when its binary content is identical.
+- Renaming a file therefore creates a separate indexed document rather than
+  replacing chunks stored under the old basename.
+
+This basename-only identity has an important limitation: files in different
+directories with the same basename and strategy are treated as one logical
+document. Depending on their exact bytes, the later operation will skip or
+replace the earlier one.
+
+Persistence serializes concurrent updates for one basename and strategy, then
+rechecks duplicate state. Deletion of an old version, insertion of every new
+chunk, and post-insert verification occur in one transaction. A failure rolls
+back the complete replacement, so old chunks are preserved and no partial new
+version remains. Insertion prefers PostgreSQL `COPY FROM STDIN` and falls back
+to `executemany()` only when the cursor does not provide COPY.
+
+Each row stores chunk content and its normalized embedding together with
+`source_file`, `document_hash`, `source_type`, `chunk_index`,
+`chunking_strategy`, `page_number`, and the database-generated `created_at`.
+PDF page numbers remain one-based; DOCX page numbers are `NULL`. A successful
+command prints whether the document was indexed, replaced, or skipped, followed
+by its basename, strategy, chunk count, and elapsed time.
+
+Extraction, chunking, and Gemini embedding complete before persistence begins.
+If Gemini fails or returns any invalid embedding, a new document writes no
+rows, and an existing version awaiting replacement remains unchanged. Gemini
+never produces partial persisted document data.
+
 ## Tests
 
 Unit tests do not require a running database:
@@ -222,10 +285,21 @@ python -m pytest tests/unit/test_embedding_config.py \
   tests/unit/test_gemini_embeddings.py
 ```
 
+Run the Stage 5 unit tests with:
+
+```bash
+python -m pytest tests/unit/test_document_hashing.py \
+  tests/unit/test_indexing_service.py \
+  tests/unit/test_indexing_cli.py \
+  tests/unit/test_chunk_persistence.py
+```
+
 These tests use constructed documents, small synthetic fixtures, and injected
 Gemini fakes. Automated tests do not download documents or spaCy models, require
 Gemini credentials, or contact Gemini. CI uses no Gemini key and all Gemini
-responses and failures are mocked.
+responses and failures are mocked. CI uses pytest discovery for the complete
+unit and integration test directories, so new Stage 5 tests do not require a
+manually maintained test-file list.
 
 Database integration tests require the healthy Compose service and a matching
 `POSTGRES_URL` in `.env`:
@@ -233,33 +307,35 @@ Database integration tests require the healthy Compose service and a matching
 ```bash
 docker compose up --detach --wait postgres
 python -m rag_app.cli database-init
-python -m pytest tests/integration
+python -m pytest tests/integration/test_database_setup.py \
+  tests/integration/test_indexing_persistence.py
 ```
 
-## Planned Commands
+## Commands
 
-Assignment-compatible entry points:
+The assignment-compatible indexing entry point is functional:
 
 ```bash
 python index_documents.py --file data/input/document.pdf --strategy fixed
-python search.py --query "What is proof of work?" --strategy fixed --top-k 5
 ```
 
-Unified CLI:
+The unified indexing command is also functional:
 
 ```bash
 python -m rag_app.cli index --file data/input/document.pdf --strategy fixed
+```
+
+The following search and reset entry points expose help and validate their
+arguments, but their application functionality remains unavailable:
+
+```bash
+python search.py --query "What is proof of work?" --strategy fixed --top-k 5
 python -m rag_app.cli search --query "What is proof of work?" --strategy paragraph --top-k 5
 python -m rag_app.cli reset --yes
 ```
 
-The supported chunking strategies are `fixed`, `sentence`, and `paragraph`.
-The public indexing and search workflows remain incomplete because extraction,
-chunking, embeddings, and persistence are not connected into a complete flow.
-Database insertion, duplicate-document handling, query embedding, and semantic
-search are not implemented. The commands expose help and validate their
-arguments, but report that later-stage application functionality is
-unavailable. Only `database-init` and `database-check` are currently functional
+Query embedding, semantic retrieval, and destructive index reset are not
+implemented. `database-init` and `database-check` remain functional database
 commands.
 
 ## Architecture
@@ -270,9 +346,10 @@ commands.
   page-aware chunking strategies.
 - `rag_app/embeddings`: implemented Gemini document requests, strict response
   validation, safe provider errors, and shared L2 normalization.
-- `rag_app/database`: implemented PostgreSQL connection, schema, and readiness
-  boundaries; later persistence and vector search remain planned.
-- `rag_app/services`: indexing and search use-case orchestration.
+- `rag_app/database`: implemented PostgreSQL connection, schema, readiness, and
+  atomic document persistence; vector search remains planned.
+- `rag_app/services`: complete indexing orchestration and the unavailable future
+  search boundary.
 - `rag_app/cli.py`: argument handling and user-facing command output only.
 
 See [`docs/architecture-decisions.md`](docs/architecture-decisions.md) for the
