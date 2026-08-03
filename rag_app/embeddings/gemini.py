@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 _RETRIEVAL_DOCUMENT_TASK = "RETRIEVAL_DOCUMENT"
 _RETRIEVAL_QUERY_TASK = "RETRIEVAL_QUERY"
+_MAX_EMBEDDINGS_PER_REQUEST = 100
 _MISSING = object()
 
 
@@ -224,12 +225,18 @@ def _request_embeddings(
         output_dimensionality=settings.embedding_dimension,
     )
 
-    normalized_vectors = _request_vectors(
-        client,
-        settings,
-        contents,
-        request_config,
-    )
+    normalized_vectors: list[EmbeddingVector] = []
+    for start in range(0, len(contents), _MAX_EMBEDDINGS_PER_REQUEST):
+        request_contents = contents[start : start + _MAX_EMBEDDINGS_PER_REQUEST]
+        normalized_vectors.extend(
+            _request_vectors(
+                client,
+                settings,
+                request_contents,
+                request_config,
+                chunk_index_offset=start,
+            )
+        )
 
     embedded_chunks = tuple(
         EmbeddedChunk(chunk=document.chunks[index], embedding=vector)
@@ -287,6 +294,7 @@ def _request_vectors(
     request_config: types.EmbedContentConfig,
     *,
     value_label: str | None = None,
+    chunk_index_offset: int = 0,
 ) -> tuple[EmbeddingVector, ...]:
 
     try:
@@ -329,7 +337,7 @@ def _request_vectors(
         normalized_vectors = tuple(
             validate_and_normalize_embedding(
                 getattr(embedding, "values", _MISSING),
-                chunk_index=chunk_index,
+                chunk_index=chunk_index + chunk_index_offset,
                 expected_dimension=settings.embedding_dimension,
                 value_label=value_label,
             )

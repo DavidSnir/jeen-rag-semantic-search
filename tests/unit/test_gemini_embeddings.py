@@ -72,6 +72,22 @@ def _document(
     )
 
 
+class _SequentialModels:
+    def __init__(self, responses: list[object]) -> None:
+        self.responses = responses
+        self.calls: list[dict[str, object]] = []
+
+    def embed_content(
+        self,
+        *,
+        model: str,
+        contents: list[str],
+        config: types.EmbedContentConfig,
+    ) -> object:
+        self.calls.append({"model": model, "contents": contents, "config": config})
+        return self.responses[len(self.calls) - 1]
+
+
 def test_embedding_errors_use_application_hierarchy() -> None:
     assert issubclass(InvalidEmbeddingInputError, EmbeddingError)
     assert issubclass(GeminiRequestError, EmbeddingError)
@@ -116,6 +132,47 @@ def test_multiple_chunks_preserve_request_and_response_order(
     assert result.chunks[1].chunk is document.chunks[1]
     assert result.chunks[0].embedding[0] == pytest.approx(1.0)
     assert result.chunks[1].embedding[1] == pytest.approx(-1.0)
+
+
+def test_large_document_uses_ordered_provider_sized_requests(
+    settings: EmbeddingSettings,
+) -> None:
+    contents = tuple(f"Chunk {index}." for index in range(101))
+    models = _SequentialModels(
+        [
+            _response(*(_vector() for _ in range(100))),
+            _response(_vector(0.0, 1.0)),
+        ]
+    )
+    client = SimpleNamespace(models=models)
+    document = _document(contents)
+
+    result = embed_document(document, settings, client=client)
+
+    assert [len(call["contents"]) for call in models.calls] == [100, 1]
+    assert models.calls[0]["contents"] == list(contents[:100])
+    assert models.calls[1]["contents"] == [contents[100]]
+    assert [item.chunk for item in result.chunks] == list(document.chunks)
+    assert result.chunks[-1].embedding[1] == pytest.approx(1.0)
+
+
+def test_invalid_vector_in_later_request_uses_global_chunk_index(
+    settings: EmbeddingSettings,
+) -> None:
+    contents = tuple(f"Chunk {index}." for index in range(101))
+    models = _SequentialModels(
+        [
+            _response(*(_vector() for _ in range(100))),
+            _response([1.0] * (EMBEDDING_DIMENSION - 1)),
+        ]
+    )
+
+    with pytest.raises(EmbeddingDimensionError, match="chunk 100"):
+        embed_document(
+            _document(contents), settings, client=SimpleNamespace(models=models)
+        )
+
+    assert [len(call["contents"]) for call in models.calls] == [100, 1]
 
 
 def test_production_path_creates_developer_api_client_after_validation(

@@ -230,3 +230,7 @@ later stages add resolved implementation details without removing them.
 168. Keep Docker Compose resources project-scoped rather than assigning checkout-global container or volume names.
 169. Scan the clean current tree and all reachable regular and merge-commit diffs with checksum-pinned Gitleaks 8.30.1, redact output, and allow only exact fingerprints for confirmed synthetic historical values.
 170. Preserve the 80% line-coverage gate and run dependency validation, lint, formatting, CLI smoke tests, fixture validation, database checks, unit tests, integration tests, coverage, and secret scanning before unconditional Compose cleanup.
+
+## Stage 9 Reproducible Examples Correction
+
+171. Supersede decision 98's single-request requirement and decision 109's second-request prohibition when a document has more than 100 chunks: send ordered synchronous Gemini requests containing at most 100 chunks each, preserve positional ordering across responses, and construct no embedded document or persisted replacement unless every response passes complete validation. These requests are provider-sized batches, not retries; the prohibition on application-level retry, backoff, and sleep remains in force.
