@@ -36,29 +36,27 @@ def test_sentence_single_sentence_is_retained() -> None:
     assert [chunk.content for chunk in result.chunks] == ["One concise sentence."]
 
 
-def test_sentence_groups_ordered_sentences_with_one_space() -> None:
+def test_sentence_returns_each_short_sentence_as_an_independent_chunk() -> None:
     result = chunk_document(_docx("First sentence. Second sentence! Third?"), "sentence")
 
     assert [chunk.content for chunk in result.chunks] == [
-        "First sentence. Second sentence! Third?"
+        "First sentence.",
+        "Second sentence!",
+        "Third?",
     ]
+    assert len(result.chunks) == 3
 
 
-def test_sentence_separator_is_included_in_maximum_length() -> None:
-    first = "a" * 999 + "."
-    fitting_second = "b" * 998 + "."
-    overflowing_second = "c" * 999 + "."
-
-    fitting = chunk_document(_docx(f"{first} {fitting_second}"), "sentence")
-    overflowing = chunk_document(
-        _docx(f"{first} {overflowing_second}"), "sentence"
+def test_sentence_trims_surrounding_whitespace_without_merging() -> None:
+    result = chunk_document(
+        _docx("  First sentence.   Second sentence!\n\nThird sentence?  "),
+        "sentence",
     )
 
-    assert len(fitting.chunks) == 1
-    assert len(fitting.chunks[0].content) == 2_000
-    assert [chunk.content for chunk in overflowing.chunks] == [
-        first,
-        overflowing_second,
+    assert [chunk.content for chunk in result.chunks] == [
+        "First sentence.",
+        "Second sentence!",
+        "Third sentence?",
     ]
 
 
@@ -73,12 +71,43 @@ def test_sentence_normal_chunks_preserve_boundaries_without_overlap() -> None:
     assert sum(chunk.content.count("beta") for chunk in result.chunks) == 1
 
 
+def test_sentence_preserves_repeated_internal_whitespace() -> None:
+    result = chunk_document(
+        _docx("First   sentence. Second sentence."), "sentence"
+    )
+
+    assert [chunk.content for chunk in result.chunks] == [
+        "First   sentence.",
+        "Second sentence.",
+    ]
+
+
+def test_sentence_recognizes_common_punctuation_boundaries() -> None:
+    result = chunk_document(_docx("Period. Exclamation! Question?"), "sentence")
+
+    assert [chunk.content for chunk in result.chunks] == [
+        "Period.",
+        "Exclamation!",
+        "Question?",
+    ]
+
+
 def test_sentence_ignores_empty_units_and_preserves_order() -> None:
     result = chunk_document(
         _docx("   ", "First.", "\n\n", "Second.", "Third."), "sentence"
     )
 
-    assert [chunk.content for chunk in result.chunks] == ["First. Second. Third."]
+    assert [chunk.content for chunk in result.chunks] == [
+        "First.",
+        "Second.",
+        "Third.",
+    ]
+    assert [chunk.chunk_index for chunk in result.chunks] == [0, 1, 2]
+
+
+def test_sentence_rejects_empty_input() -> None:
+    with pytest.raises(ChunkGenerationError, match="meaningful"):
+        chunk_document(_docx("  \n\t  "), "sentence")
 
 
 def test_sentence_exactly_2000_characters_is_not_split() -> None:
@@ -100,7 +129,7 @@ def test_sentence_oversized_sentence_uses_fixed_overlap() -> None:
     assert result.chunks[1].content == sentence[1_500:]
 
 
-def test_sentence_flushes_normal_content_around_oversized_sentence() -> None:
+def test_sentence_preserves_normal_content_around_oversized_sentence() -> None:
     oversized = "z" * 2_000 + "."
 
     result = chunk_document(
@@ -112,23 +141,30 @@ def test_sentence_flushes_normal_content_around_oversized_sentence() -> None:
     assert result.chunks[3].content == "After."
 
 
-def test_sentence_pdf_pages_flush_and_preserve_page_numbers() -> None:
+def test_sentence_pdf_sentences_preserve_page_numbers_and_order() -> None:
     result = chunk_document(
-        _pdf(("Last sentence on page one.", 1), ("First sentence on page two.", 2)),
+        _pdf(
+            ("First sentence on page one. Last sentence on page one.", 1),
+            ("First sentence on page two.", 2),
+        ),
         "sentence",
     )
 
     assert [chunk.content for chunk in result.chunks] == [
+        "First sentence on page one.",
         "Last sentence on page one.",
         "First sentence on page two.",
     ]
-    assert [chunk.page_number for chunk in result.chunks] == [1, 2]
+    assert [chunk.page_number for chunk in result.chunks] == [1, 1, 2]
 
 
-def test_sentence_docx_groups_across_adjacent_units_with_null_pages() -> None:
+def test_sentence_docx_keeps_adjacent_units_independent_with_null_pages() -> None:
     result = chunk_document(_docx("First unit.", "Second unit."), "sentence")
 
-    assert [chunk.content for chunk in result.chunks] == ["First unit. Second unit."]
+    assert [chunk.content for chunk in result.chunks] == [
+        "First unit.",
+        "Second unit.",
+    ]
     assert all(chunk.page_number is None for chunk in result.chunks)
 
 

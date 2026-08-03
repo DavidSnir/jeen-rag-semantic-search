@@ -131,12 +131,12 @@ later stages add resolved implementation details without removing them.
 ## Stage 3 Chunking Implementation
 
 86. Represent chunks and complete chunking results with shared immutable models containing no embeddings, database identifiers, or document hashes.
-87. Apply one common 2,000-character maximum to fixed, sentence, and paragraph chunks, including separators inserted during grouping.
+87. Apply one common 2,000-character maximum to fixed chunks and to each individual sentence or paragraph before fallback; the threshold must not be used to accumulate short semantic units.
 88. Use a 1,500-character fixed-window step so successive full windows have exactly 500 characters of overlap.
 89. Do not overlap normal sentence or paragraph chunks; overlap applies only to the fixed strategy and oversized individual-sentence fallback.
-90. Join grouped sentences with one regular space and grouped paragraphs with two newline characters.
+90. Return one detected sentence per sentence chunk and one detected paragraph per paragraph chunk, never combine short semantic units, and preserve source-document ordering.
 91. Lazily initialize and reuse one `spacy.blank("en")` pipeline containing only the Sentencizer component, without loading a downloaded language model.
-92. Split every oversized paragraph by sentence and route every oversized individual sentence through the one shared fixed-size splitter.
+92. Split every oversized paragraph into independent sentence chunks and route every oversized individual sentence through the one shared fixed-size splitter without recombining fallback results.
 93. Process PDF pages independently for every strategy so no chunk spans physical pages and every chunk retains one unambiguous physical page number.
 94. Assign continuous zero-based chunk indexes only after all ordered document chunks have been generated and empty results removed.
 95. Remove only empty or whitespace-only chunks and preserve all meaningful short chunks without imposing a minimum content length.
