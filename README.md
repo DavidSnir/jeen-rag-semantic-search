@@ -97,7 +97,7 @@ support for other Python versions or operating systems.
 PostgreSQL and pgvector do not need to be installed on the host. They run in
 Docker Compose from the pinned `pgvector/pgvector:0.8.2-pg17-bookworm` image.
 
-`curl` is optional because the Bitcoin PDF can be downloaded in a browser or
+`curl` is optional because the NIST CSF 2.0 PDF can be downloaded in a browser or
 with PowerShell. Gitleaks 8.30.1 is optional for normal application use but is
 required to reproduce the repository's complete secret-scanning quality gate.
 
@@ -277,7 +277,7 @@ Use the root wrapper:
 python index_documents.py --file data/input/document.pdf --strategy fixed
 ```
 
-Replace the example path with an existing supported document. The Bitcoin
+Replace the example path with an existing supported document. The NIST CSF 2.0
 demonstration below provides a directly reproducible input file.
 
 Or use the equivalent unified command:
@@ -346,45 +346,45 @@ Results contain stored chunk text and metadata, not an AI-generated answer.
 Search is read-only and does not expose stored vectors, hashes, row IDs, or
 timestamps.
 
-## Reproducible Bitcoin Whitepaper Demonstration
+## Reproducible NIST CSF 2.0 Demonstration
 
-The demonstration uses Satoshi Nakamoto's English Bitcoin Whitepaper from the
-[official Bitcoin project source](https://bitcoin.org/bitcoin.pdf). Keep local
-input documents in `data/input/`, whose contents are already ignored by Git. Do
-not commit the PDF or add another filename-specific ignore rule.
+The demonstration uses the NIST Cybersecurity Framework (CSF) 2.0 from the
+[official NIST source](https://nvlpubs.nist.gov/nistpubs/CSWP/NIST.CSWP.29.pdf).
+Keep local input documents in `data/input/`, whose contents are already ignored
+by Git. Do not commit the PDF or add another filename-specific ignore rule.
 
 Download it in a POSIX-compatible shell:
 
 ```bash
 curl --fail --location \
-  --output data/input/bitcoin.pdf \
-  https://bitcoin.org/bitcoin.pdf
+  --output data/input/NIST.CSWP.29.pdf \
+  https://nvlpubs.nist.gov/nistpubs/CSWP/NIST.CSWP.29.pdf
 ```
 
 Or in Windows PowerShell:
 
 ```powershell
 Invoke-WebRequest `
-  -Uri https://bitcoin.org/bitcoin.pdf `
-  -OutFile data/input/bitcoin.pdf
+  -Uri https://nvlpubs.nist.gov/nistpubs/CSWP/NIST.CSWP.29.pdf `
+  -OutFile data/input/NIST.CSWP.29.pdf
 ```
 
-The PDF used for the captured demonstration is 184,292 bytes with SHA-256:
+The PDF used for the captured demonstration is 1,518,858 bytes with SHA-256:
 
 ```text
-b1674191a88ec5cdd733e4240a81803105dc412d6c6708d53ab94fc248f4f553
+03c31f46fee98cac0c4323453e5109291a213b4de7fef8c058af9bf67f717433c
 ```
 
 Verify it in a POSIX-compatible shell:
 
 ```bash
-shasum -a 256 data/input/bitcoin.pdf
+shasum -a 256 data/input/NIST.CSWP.29.pdf
 ```
 
 Or in Windows PowerShell:
 
 ```powershell
-(Get-FileHash data/input/bitcoin.pdf -Algorithm SHA256).Hash.ToLower()
+(Get-FileHash data/input/NIST.CSWP.29.pdf -Algorithm SHA256).Hash.ToLower()
 ```
 
 If the checksum differs, do not expect the documented chunk counts or search
@@ -394,70 +394,51 @@ The following commands were run against an empty PostgreSQL volume using the
 official PDF. Elapsed time varies by machine and provider response time.
 
 ```bash
-python index_documents.py --file data/input/bitcoin.pdf --strategy fixed
-python index_documents.py --file data/input/bitcoin.pdf --strategy sentence
-python index_documents.py --file data/input/bitcoin.pdf --strategy paragraph
-python index_documents.py --file data/input/bitcoin.pdf --strategy fixed
+python index_documents.py --file data/input/NIST.CSWP.29.pdf --strategy fixed
+python index_documents.py --file data/input/NIST.CSWP.29.pdf --strategy sentence
+python index_documents.py --file data/input/NIST.CSWP.29.pdf --strategy paragraph
+python index_documents.py --file data/input/NIST.CSWP.29.pdf --strategy fixed
 ```
 
 Actual indexing and duplicate-skip output:
 
 ```text
-Indexed document: bitcoin.pdf | strategy=fixed | chunks=16 | elapsed=2.22s
-Indexed document: bitcoin.pdf | strategy=sentence | chunks=161 | elapsed=7.07s
-Indexed document: bitcoin.pdf | strategy=paragraph | chunks=142 | elapsed=6.57s
-Skipped unchanged document: bitcoin.pdf | strategy=fixed | chunks=16 | elapsed=0.05s
+Indexed document: NIST.CSWP.29.pdf | strategy=fixed | chunks=51 | elapsed=<varies>
+Indexed document: NIST.CSWP.29.pdf | strategy=sentence | chunks=381 | elapsed=<varies>
+Indexed document: NIST.CSWP.29.pdf | strategy=paragraph | chunks=242 | elapsed=<varies>
+Skipped unchanged document: NIST.CSWP.29.pdf | strategy=fixed | chunks=51 | elapsed=<varies>
 ```
 
 Actual chunk-count comparison for the same file:
 
 | Strategy | Chunks |
 | --- | ---: |
-| `fixed` | 16 |
-| `sentence` | 161 |
-| `paragraph` | 142 |
+| `fixed` | 51 |
+| `sentence` | 381 |
+| `paragraph` | 242 |
 
 The reproducible search query is:
 
 ```text
-How does proof-of-work prevent double-spending?
+What are the six functions of the NIST Cybersecurity Framework Core?
 ```
 
 Run it against the paragraph representation and request two results:
 
 ```bash
 python search.py \
-  --query "How does proof-of-work prevent double-spending?" \
+  --query "What are the six functions of the NIST Cybersecurity Framework Core?" \
   --strategy paragraph \
   --top-k 2
 ```
 
-Actual output from the indexed data:
-
-```text
-Result 1 | score=0.7263
-source=bitcoin.pdf | type=PDF | strategy=paragraph | chunk=48 | page=3
-Once the CPU
-effort has been expended to make it satisfy the proof-of-work, the block cannot be changed
-without redoing the work.
-------------------------------------------------------------------------
-Result 2 | score=0.7079
-source=bitcoin.pdf | type=PDF | strategy=paragraph | chunk=55 | page=3
-To modify a past block, an attacker would have to
-redo the proof-of-work of the block and all blocks after it and then catch up with and surpass the
-work of the honest nodes.
-```
-
-These scores and ranks came from a real Gemini request and may change if the
-provider's embedding behavior changes. The metadata and stored chunks correspond
-to the database evidence below.
+Scores and ranks may change if the embedding provider's behavior changes.
 
 ## Database Inspection
 
 The Compose image includes `psql`. This query uses the database name and role
-inside the container, reports all three strategy counts, and inspects the two
-chunks returned by the demonstration search. It shows dimensions only, never
-full vectors.
+inside the container and reports all three strategy counts. It shows dimensions
+only, never full vectors.
 
 ```bash
 docker compose exec -T postgres sh -c \
@@ -470,36 +451,18 @@ FROM public.chunks
 GROUP BY source_file, chunking_strategy
 ORDER BY source_file, chunking_strategy;
 
-SELECT source_file,
-       chunking_strategy AS strategy,
-       chunk_index,
-       page_number,
-       left(replace(content, chr(10), chr(32)), 88) AS content_preview,
-       vector_dims(embedding) AS dimensions
-FROM public.chunks
-WHERE source_file = 'bitcoin.pdf'
-  AND chunking_strategy = 'paragraph'
-  AND chunk_index IN (48, 55)
-ORDER BY chunk_index;
 SQL
 ```
 
-Actual output; content is intentionally limited by the query to an 88-character
-preview:
+Expected counts for the verified PDF:
 
 ```text
  source_file | strategy  | chunks | dimensions
 -------------+-----------+--------+------------
- bitcoin.pdf | fixed     |     16 |        768
- bitcoin.pdf | paragraph |    142 |        768
- bitcoin.pdf | sentence  |    161 |        768
+ NIST.CSWP.29.pdf | fixed     |     51 |        768
+ NIST.CSWP.29.pdf | paragraph |    242 |        768
+ NIST.CSWP.29.pdf | sentence  |    381 |        768
 (3 rows)
-
- source_file | strategy  | chunk_index | page_number |                                     content_preview                                      | dimensions
--------------+-----------+-------------+-------------+------------------------------------------------------------------------------------------+------------
- bitcoin.pdf | paragraph |          48 |           3 | Once the CPU effort has been expended to make it satisfy the proof-of-work, the block ca |        768
- bitcoin.pdf | paragraph |          55 |           3 | To modify a past block, an attacker would have to redo the proof-of-work of the block an |        768
-(2 rows)
 ```
 
 ## Testing and Quality Checks

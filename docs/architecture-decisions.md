@@ -95,7 +95,7 @@ later stages add resolved implementation details without removing them.
 
 ## Example Document and Tests
 
-60. Use the English Bitcoin Whitepaper for README demonstrations.
+60. Use the NIST Cybersecurity Framework (CSF) 2.0 for README demonstrations.
 61. Include a link and download instructions rather than committing the PDF by default.
 62. Require a minimum of 80% line coverage before submission.
 63. Fully test text cleaning, all three chunking strategies, embedding-dimension validation, duplicate-index prevention, and semantic-search query construction.
