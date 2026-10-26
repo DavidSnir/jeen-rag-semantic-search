@@ -1,0 +1,7 @@
+# Confirmed synthetic test placeholders from the commits that introduced them.
+c3157f5f3fdbb0e55de9710645543f85a4813758:tests/unit/test_query_embeddings.py:generic-api-key:27
+1cffaab6eaabd39af2fbff602877a4ddeee86e56:tests/unit/test_embedding_config.py:generic-api-key:15
+1cffaab6eaabd39af2fbff602877a4ddeee86e56:tests/unit/test_gemini_embeddings.py:generic-api-key:32
+74cf67689edf104232f53b9d72d99cd3f51f3ed5:tests/unit/test_query_embeddings.py:generic-api-key:27
+3f5e85d800d83ad5b2861f0e1117b9394281831e:tests/unit/test_embedding_config.py:generic-api-key:15
+3f5e85d800d83ad5b2861f0e1117b9394281831e:tests/unit/test_gemini_embeddings.py:generic-api-key:32

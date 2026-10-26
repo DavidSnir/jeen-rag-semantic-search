@@ -1,0 +1,64 @@
+{
+  "purpose": "Current source snapshot before machine reset; original Git histories, ignored data, and withheld files are in the external-drive archive.",
+  "source": "/Users/davidsnir/Jeen/RAG",
+  "nested_repositories_flattened": [
+    {
+      "path": ".",
+      "branch": "docs/update-nist-example",
+      "head": "a4268122a0c7e043b5b5b7d2e813b77944d6aa30",
+      "refs": [
+        [
+          "refs/heads/docs/update-nist-example",
+          "a4268122a0c7e043b5b5b7d2e813b77944d6aa30"
+        ],
+        [
+          "refs/heads/feature/stage-0-repository-bootstrap-and-architecture-setup",
+          "3a54015c5644b672b2359603614da772921c4af2"
+        ],
+        [
+          "refs/heads/feature/stage-1-posgreSQL-and-pgvector",
+          "a7cbfdd7ec17461200c1c83b0638a67255acd99e"
+        ],
+        [
+          "refs/heads/feature/stage-2-document-validation-and-text-extraction",
+          "8dab6a994966b2bb302f66fab763cab0008410ba"
+        ],
+        [
+          "refs/heads/feature/stage-3-three-chunking-strategies",
+          "19b78e37cc003339d3f78672c72e9af680d60002"
+        ],
+        [
+          "refs/heads/feature/stage-4-gemini-embeddings",
+          "1cffaab6eaabd39af2fbff602877a4ddeee86e56"
+        ],
+        [
+          "refs/heads/feature/stage-5-indexing-pipeline-and-persistence",
+          "4a1f11802f9bd95aff974dbd3ae08e0cd66fa9bb"
+        ],
+        [
+          "refs/heads/feature/stage-6-semantic-search",
+          "c3157f5f3fdbb0e55de9710645543f85a4813758"
+        ],
+        [
+          "refs/heads/feature/stage-7-error-handling-and-cli",
+          "d4f10d0b2cd35fbe02fb1c5846c76a99be4fb34f"
+        ],
+        [
+          "refs/heads/feature/stage-8-testing-and-code-quality",
+          "db991c396fb5e922934aa33eef3ac94fe8e3c668"
+        ],
+        [
+          "refs/heads/feature/stage-9-readme-and-examples",
+          "947922c9765467324f4e6102da706e05a6fcc050"
+        ],
+        [
+          "refs/heads/main",
+          "19b78e37cc003339d3f78672c72e9af680d60002"
+        ]
+      ],
+      "stash_commits": []
+    }
+  ],
+  "withheld_from_github": [],
+  "created": "2026-10-26T14:09:04+02:00"
+}

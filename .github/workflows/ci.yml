@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  stage-8-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GEMINI_API_KEY: ""
+      POSTGRES_DB: rag_app_test
+      POSTGRES_USER: rag_app_test
+      POSTGRES_PASSWORD: ci-only-test-password
+      POSTGRES_PORT: "5432"
+      POSTGRES_URL: postgresql://rag_app_test:ci-only-test-password@localhost:5432/rag_app_test
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          curl --fail --silent --show-error --location \
+            --output "$RUNNER_TEMP/gitleaks.tar.gz" \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/gitleaks.tar.gz" \
+            | sha256sum --check --strict
+          tar --extract --gzip --file "$RUNNER_TEMP/gitleaks.tar.gz" \
+            --directory "$RUNNER_TEMP" gitleaks
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Verify dependency imports
+        run: >-
+          python -m pip check && python -c "from google import genai; import coverage,
+          docx, dotenv, pgvector, psycopg, pypdf, pytest, pytest_cov, ruff, spacy,
+          typer"
+
+      - name: Lint
+        run: python -m ruff check .
+
+      - name: Check formatting
+        run: python -m ruff format --check .
+
+      - name: Verify CLI help
+        run: |
+          python -m rag_app.cli --help
+          python index_documents.py --help
+          python search.py --help
+
+      - name: Verify deterministic synthetic fixtures
+        run: |
+          python tests/fixtures/generate_fixtures.py
+          git diff --exit-code -- tests/fixtures
+
+      - name: Validate Docker Compose configuration
+        run: docker compose config --quiet
+
+      - name: Start PostgreSQL and wait for health
+        run: docker compose up --detach --wait --wait-timeout 90 postgres
+
+      - name: Verify PostgreSQL container health
+        run: >-
+          docker compose exec -T postgres pg_isready -h localhost
+          -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+
+      - name: Verify automatic first-volume schema
+        run: python -m rag_app.cli database-check
+
+      - name: Initialize schema twice
+        run: |
+          python -m rag_app.cli database-init
+          python -m rag_app.cli database-init
+
+      - name: Verify complete database readiness
+        run: python -m rag_app.cli database-check
+
+      - name: Run unit tests with mocked Gemini
+        run: |
+          python -m coverage erase
+          python -m coverage run --source=rag_app -m pytest tests/unit
+
+      - name: Run PostgreSQL integration tests with mocked Gemini
+        run: python -m coverage run --append --source=rag_app -m pytest tests/integration
+
+      - name: Verify test coverage
+        run: python -m coverage report --fail-under=80
+
+      - name: Scan current tree and full Git history for secrets
+        if: always() && !cancelled()
+        run: |
+          gitleaks dir --redact --no-banner .
+          gitleaks git --redact --no-banner --log-opts="--all -m" .
+
+      - name: Stop disposable PostgreSQL environment
+        if: always()
+        run: docker compose down --volumes --remove-orphans
